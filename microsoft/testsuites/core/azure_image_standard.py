@@ -520,6 +520,28 @@ class AzureImageStandard(TestSuite):
 
     @TestCaseMetadata(
         description="""
+        Verify if there is any issues in and after 'yum update'
+
+        Steps:
+        1. Run 'yum update -y' command.
+        2. Get the output of dmesg to see if the VM is still in good state.
+        """,
+        priority=2,
+        requirement=simple_requirement(supported_platform_type=[AZURE, READY]),
+    )
+    def verify_yum_update(self, node: Node) -> None:
+        dmesg = node.tools[Dmesg]
+        if isinstance(node.os, Fedora):
+            node.execute(
+                "yum update -y",
+                sudo=True,
+            )
+            dmesg.get_output(force_run=True)
+        else:
+            raise SkippedException(f"Unsupported distro type : {type(node.os)}")
+
+    @TestCaseMetadata(
+        description="""
         This test will check that kvp daemon is installed. This is an optional
         requirement for Debian based distros.
 
