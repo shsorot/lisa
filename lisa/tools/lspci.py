@@ -327,6 +327,19 @@ class Lspci(Tool):
         ]
         return gpu_device_list
 
+    def get_devices_by_vendor_device_id(
+        self,
+        vendor_id: str,
+        device_id: str,
+        force_run: bool = False,
+    ) -> List[PciDevice]:
+        full_list = self.get_devices(force_run=force_run)
+        devices_list = []
+        for device in full_list:
+            if device.device_id == device_id and device.vendor_id == vendor_id:
+                devices_list.append(device)
+        return devices_list
+
 
 class LspciBSD(Lspci):
     _DEVICE_DRIVER_MAPPING: Dict[str, Pattern[str]] = {
