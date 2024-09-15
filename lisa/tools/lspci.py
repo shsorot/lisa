@@ -163,13 +163,25 @@ class Lspci(Tool):
         return self._check_exists()
 
     def get_device_names_by_type(
-        self, device_type: str, force_run: bool = False
+        self, device_type: str, force_run: bool = False, use_pci_ids: bool = False
     ) -> List[str]:
         if device_type.upper() not in DEVICE_TYPE_DICT.keys():
             raise LisaException(f"pci_type '{device_type}' is not recognized.")
         class_names = DEVICE_TYPE_DICT[device_type.upper()]
         devices_list = self.get_devices(force_run)
-        devices_slots = [x.slot for x in devices_list if x.device_class in class_names]
+        devices_slots = []
+        if use_pci_ids:
+            for device in devices_list:
+                if (
+                    device.controller_id in CONTROLLER_ID_DICT[device_type.upper()]
+                    and device.vendor_id in VENDOR_ID_DICT[device_type.upper()]
+                    and device.device_id in DEVICE_ID_DICT[device_type.upper()]
+                ):
+                    devices_slots.append(device.slot)
+        else:
+            devices_slots = [
+                x.slot for x in devices_list if x.device_class in class_names
+            ]
         return devices_slots
 
     def get_devices_by_type(
@@ -318,7 +330,7 @@ class LspciBSD(Lspci):
     _disabled_devices: Set[str] = set()
 
     def get_device_names_by_type(
-        self, device_type: str, force_run: bool = False
+        self, device_type: str, force_run: bool = False, use_pci_ids: bool = False
     ) -> List[str]:
         output = self.node.execute("pciconf -l", sudo=True).stdout
         if device_type.upper() not in self._DEVICE_DRIVER_MAPPING.keys():
