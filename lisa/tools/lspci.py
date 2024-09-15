@@ -8,12 +8,7 @@ from retry import retry
 from lisa.executable import Tool
 from lisa.operating_system import Posix
 from lisa.tools import Echo
-from lisa.util import (
-    LisaException,
-    constants,
-    find_patterns_in_lines,
-    get_matched_str,
-)
+from lisa.util import LisaException, constants, find_patterns_in_lines, get_matched_str
 
 # Example output of lspci command -
 # lspci -m
@@ -129,13 +124,20 @@ class PciDevice:
         matched_pci_device_info = PATTERN_PCI_DEVICE.match(raw_str)
         if matched_pci_device_info:
             self.slot = matched_pci_device_info.group("slot")
+            assert self.slot, f"Can not find slot info for: {raw_str}"
             self.device_class = matched_pci_device_info.group("device_class")
+            assert self.device_class, f"Can not find device class for: {raw_str}"
             self.vendor = matched_pci_device_info.group("vendor")
+            assert self.vendor, f"Can not find vendor info for: {raw_str}"
             self.device_info = matched_pci_device_info.group("device")
+            assert self.device_info, f"Can not find device info for: {raw_str}"
             if pci_ids:
                 self.device_id = pci_ids[self.slot]["device_id"]
+                assert self.device_id, f"cannot find device id from {raw_str}"
                 self.vendor_id = pci_ids[self.slot]["vendor_id"]
+                assert self.vendor_id, f"cannot find vendor id from {raw_str}"
                 self.controller_id = pci_ids[self.slot]["controller_id"]
+                assert self.controller_id, f"cannot findcontroller_id from {raw_str}"
         else:
             raise LisaException("cannot find any matched pci devices")
 
@@ -163,13 +165,25 @@ class Lspci(Tool):
         return self._check_exists()
 
     def get_device_names_by_type(
-        self, device_type: str, force_run: bool = False
+        self, device_type: str, force_run: bool = False, use_pci_ids: bool = False
     ) -> List[str]:
         if device_type.upper() not in DEVICE_TYPE_DICT.keys():
             raise LisaException(f"pci_type '{device_type}' is not recognized.")
         class_names = DEVICE_TYPE_DICT[device_type.upper()]
         devices_list = self.get_devices(force_run)
-        devices_slots = [x.slot for x in devices_list if x.device_class in class_names]
+        devices_slots = []
+        if use_pci_ids:
+            for device in devices_list:
+                if (
+                    device.controller_id in CONTROLLER_ID_DICT[device_type.upper()]
+                    and device.vendor_id in VENDOR_ID_DICT[device_type.upper()]
+                    and device.device_id in DEVICE_ID_DICT[device_type.upper()]
+                ):
+                    devices_slots.append(device.slot)
+        else:
+            devices_slots = [
+                x.slot for x in devices_list if x.device_class in class_names
+            ]
         return devices_slots
 
     def get_devices_by_type(
@@ -196,6 +210,7 @@ class Lspci(Tool):
             ]
         return device_type_list
 
+    @retry(KeyError, tries=10, delay=20)
     def get_devices(self, force_run: bool = False) -> List[PciDevice]:
         if (not self._pci_devices) or force_run:
             self._pci_devices = []
@@ -318,7 +333,7 @@ class LspciBSD(Lspci):
     _disabled_devices: Set[str] = set()
 
     def get_device_names_by_type(
-        self, device_type: str, force_run: bool = False
+        self, device_type: str, force_run: bool = False, use_pci_ids: bool = False
     ) -> List[str]:
         output = self.node.execute("pciconf -l", sudo=True).stdout
         if device_type.upper() not in self._DEVICE_DRIVER_MAPPING.keys():
