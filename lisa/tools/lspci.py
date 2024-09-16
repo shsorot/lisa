@@ -8,12 +8,7 @@ from retry import retry
 from lisa.executable import Tool
 from lisa.operating_system import Posix
 from lisa.tools import Echo
-from lisa.util import (
-    LisaException,
-    constants,
-    find_patterns_in_lines,
-    get_matched_str,
-)
+from lisa.util import LisaException, constants, find_patterns_in_lines, get_matched_str
 
 # Example output of lspci command -
 # lspci -m
