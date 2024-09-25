@@ -62,9 +62,6 @@ class NvmeTestSuite(TestSuite):
 
         3. Compare nvme devices count return from `lspci`
           and list nvme devices under /dev/.
-
-        4. Azure platform only, nvme devices count should equal to
-          actual vCPU count / 8.
         """,
         priority=1,
         requirement=simple_requirement(
