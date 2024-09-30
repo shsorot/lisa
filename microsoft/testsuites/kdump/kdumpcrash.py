@@ -3,7 +3,7 @@
 import time
 from pathlib import Path
 from random import randint
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 from func_timeout import FunctionTimedOut, func_set_timeout  # type: ignore
 
@@ -27,7 +27,7 @@ from lisa.features.security_profile import CvmDisabled
 from lisa.operating_system import BSD, Redhat, Windows
 from lisa.tools import Dmesg, Echo, KdumpBase, KernelConfig, Lscpu, Stat
 from lisa.tools.free import Free
-from lisa.util.perf_timer import create_timer
+from lisa.util.perf_timer import Timer, create_timer
 from lisa.util.shell import try_connect
 
 
@@ -369,6 +369,87 @@ class KdumpCrash(TestSuite):
         )
         return result.stdout
 
+    def _get_console_log(
+        self,
+        serial_console: Optional[SerialConsole],
+        log_path: Path,
+        message: str,
+    ) -> None:
+        if serial_console:
+            serial_console.get_console_log(saved_path=log_path, force_run=True)
+        raise LisaException(message)
+
+    def _wait_dump_file_generated(
+        self,
+        node: Node,
+        log_path: Path,
+        log: Logger,
+        kdump: KdumpBase,
+        timer: Timer,
+        serial_console: Optional[SerialConsole],
+    ) -> bool:
+        saved_dumpfile_size = 0
+        max_tries = 20
+        check_incomplete_file_tries = 0
+        check_dump_file_tries = 0
+        # Check in this loop until the dump file is generated or incomplete file
+        # doesn't grow or timeout
+        while True:
+            try:
+                if self._is_dump_file_generated(node, kdump):
+                    return True
+                incomplete_file = self._check_incomplete_dump_file_generated(
+                    node=node, kdump=kdump
+                )
+                if incomplete_file:
+                    check_dump_file_tries = 0
+                    stat = node.tools[Stat]
+                    incomplete_file_size = stat.get_total_size(incomplete_file)
+            except Exception as identifier:
+                log.debug(
+                    "Fail to execute command. It may be caused by the system kernel"
+                    " reboot after dumping vmcore."
+                    f"{identifier.__class__.__name__}: {identifier}. Retry..."
+                )
+                # Hit exception, break this loop and re-try to connect the system
+                return False
+            if incomplete_file:
+                # If the incomplete file doesn't grow in 100s, then raise exception
+                if incomplete_file_size > saved_dumpfile_size:
+                    saved_dumpfile_size = incomplete_file_size
+                    check_incomplete_file_tries = 0
+                else:
+                    check_incomplete_file_tries += 1
+                    if check_incomplete_file_tries >= max_tries:
+                        node.execute("df -h")
+                        self._get_console_log(
+                            serial_console=serial_console,
+                            log_path=log_path,
+                            message=(
+                                "The vmcore file is incomplete with file size"
+                                f" {round(incomplete_file_size/1024/1024, 2)}MB"
+                            ),
+                        )
+            else:
+                # If there is no any dump file in 100s, then raise exception
+                check_dump_file_tries += 1
+                if check_dump_file_tries >= max_tries:
+                    self._get_console_log(
+                        serial_console=serial_console,
+                        log_path=log_path,
+                        message=(
+                            "No vmcore or vmcore-incomplete is found under "
+                            f"{kdump.dump_path} with file size greater than 10M."
+                        ),
+                    )
+            if timer.elapsed(False) > self.timeout_of_dump_crash:
+                self._get_console_log(
+                    serial_console=serial_console,
+                    log_path=log_path,
+                    message="Timeout to dump vmcore file.",
+                )
+            time.sleep(5)
+
     def _check_kdump_result(
         self, node: Node, log_path: Path, log: Logger, kdump: KdumpBase
     ) -> None:
@@ -390,76 +471,38 @@ class KdumpCrash(TestSuite):
         #    the same steps to check.
         timer = create_timer()
         has_checked_console_log = False
-        serial_console = node.features[SerialConsole]
+        serial_console = None
+        if node.features and node.features.is_supported(SerialConsole):
+            serial_console = node.features[SerialConsole]
         while timer.elapsed(False) < self.timeout_of_dump_crash:
             if not self._is_system_connected(node, log):
                 if not has_checked_console_log and timer.elapsed(False) > 60:
-                    serial_console.check_initramfs(
-                        saved_path=log_path, stage="after_trigger_crash", force_run=True
-                    )
+                    if serial_console:
+                        serial_console.check_initramfs(
+                            saved_path=log_path,
+                            stage="after_trigger_crash",
+                            force_run=True,
+                        )
                     has_checked_console_log = True
                 continue
 
             # After trigger kdump, the VM will reboot. We need to close the node
             node.close()
-            saved_dumpfile_size = 0
-            max_tries = 20
-            check_incomplete_file_tries = 0
-            check_dump_file_tries = 0
-            # Check in this loop until the dump file is generated or incomplete file
-            # doesn't grow or timeout
-            while True:
-                try:
-                    if self._is_dump_file_generated(node, kdump):
-                        return
-                    incomplete_file = self._check_incomplete_dump_file_generated(
-                        node=node, kdump=kdump
-                    )
-                    if incomplete_file:
-                        check_dump_file_tries = 0
-                        stat = node.tools[Stat]
-                        incomplete_file_size = stat.get_total_size(incomplete_file)
-                except Exception as identifier:
-                    log.debug(
-                        "Fail to execute command. It may be caused by the system kernel"
-                        " reboot after dumping vmcore."
-                        f"{identifier.__class__.__name__}: {identifier}. Retry..."
-                    )
-                    # Hit exception, break this loop and re-try to connect the system
-                    break
-                if incomplete_file:
-                    # If the incomplete file doesn't grow in 100s, then raise exception
-                    if incomplete_file_size > saved_dumpfile_size:
-                        saved_dumpfile_size = incomplete_file_size
-                        check_incomplete_file_tries = 0
-                    else:
-                        check_incomplete_file_tries += 1
-                        if check_incomplete_file_tries >= max_tries:
-                            serial_console.get_console_log(
-                                saved_path=log_path, force_run=True
-                            )
-                            node.execute("df -h")
-                            raise LisaException(
-                                "The vmcore file is incomplete with file size"
-                                f" {round(incomplete_file_size/1024/1024, 2)}MB"
-                            )
-                else:
-                    # If there is no any dump file in 100s, then raise exception
-                    check_dump_file_tries += 1
-                    if check_dump_file_tries >= max_tries:
-                        serial_console.get_console_log(
-                            saved_path=log_path, force_run=True
-                        )
-                        raise LisaException(
-                            "No vmcore or vmcore-incomplete is found under "
-                            f"{kdump.dump_path} with file size greater than 10M."
-                        )
-                if timer.elapsed(False) > self.timeout_of_dump_crash:
-                    serial_console.get_console_log(saved_path=log_path, force_run=True)
-                    raise LisaException("Timeout to dump vmcore file.")
-                time.sleep(5)
-        serial_console.get_console_log(saved_path=log_path, force_run=True)
-        raise LisaException("Timeout to connect the VM after triggering kdump.")
+            dump_file_found = self._wait_dump_file_generated(
+                node=node,
+                log_path=log_path,
+                log=log,
+                kdump=kdump,
+                timer=timer,
+                serial_console=serial_console,
+            )
+            if dump_file_found:
+                return
+        self._get_console_log(
+            serial_console=serial_console,
+            log_path=log_path,
+            message="Timeout to connect the VM after triggering kdump.",
+        )
 
     def _trigger_kdump_on_specified_cpu(
         self, cpu_num: int, node: Node, log_path: Path, log: Logger
