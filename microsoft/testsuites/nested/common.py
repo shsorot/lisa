@@ -60,16 +60,17 @@ def qemu_connect_nested_vm(
             "run on Debian, Fedora and Suse distros."
         )
 
-    image_folder_path = host.find_partition_with_freespace(image_size)
+    # image_folder_path = host.find_partition_with_freespace(image_size)
 
-    host.tools[Aria].get(
-        url=guest_image_url,
-        file_path=image_folder_path,
-        filename=image_name,
-        sudo=True,
-        timeout=NESTED_VM_DOWNLOAD_TIMEOUT,
-    )
-
+    # host.tools[Aria].get(
+    #     url=guest_image_url,
+    #     file_path=image_folder_path,
+    #     filename=image_name,
+    #     sudo=True,
+    #     timeout=NESTED_VM_DOWNLOAD_TIMEOUT,
+    # )
+    image_folder_path = "/home/lisatest"
+    image_name = "jammy-server-cloudimg-amd64.img"
     # start nested vm
     host.tools[Qemu].create_vm(
         guest_port,

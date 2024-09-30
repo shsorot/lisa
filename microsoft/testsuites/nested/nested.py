@@ -56,12 +56,17 @@ class Nested(TestSuite):
     def verify_nested_kvm_basic(
         self, node: RemoteNode, variables: Dict[str, Any]
     ) -> None:
-        (
-            nested_image_username,
-            nested_image_password,
-            nested_image_port,
-            nested_image_url,
-        ) = parse_nested_image_variables(variables)
+        # (
+        #     nested_image_username,
+        #     nested_image_password,
+        #     nested_image_port,
+        #     nested_image_url,
+        # ) = parse_nested_image_variables(variables)
+
+        nested_image_username = "ubuntu"
+        nested_image_password = "r#XbDR8<%yt4"
+        nested_image_port = 60024
+        nested_image_url = ""
 
         # get l2 vm
         l2_vm = qemu_connect_nested_vm(
