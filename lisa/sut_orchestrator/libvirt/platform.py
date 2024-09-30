@@ -28,6 +28,7 @@ from lisa.operating_system import CBLMariner
 from lisa.platform_ import Platform
 from lisa.sut_orchestrator.libvirt.libvirt_device_pool import LibvirtDevicePool
 from lisa.tools import (
+    Cat,
     Chmod,
     Chown,
     Cp,
@@ -186,6 +187,16 @@ class BaseLibvirtPlatform(Platform, IBaseLibvirtPlatform):
         self.device_pool.configure_device_passthrough_pool(
             self.platform_runbook.device_pools,
         )
+
+        cloud_init_log_file = "/var/log/cloud-init.log"
+        cat = self.host_node.tools[Cat]
+        ls = self.host_node.tools[Ls]
+        if ls.path_exists(path=cloud_init_log_file):
+            cloud_init_log = cat.read(
+                file=cloud_init_log_file,
+                force_run=True,
+            )
+            self._log.debug(cloud_init_log)
 
     def _prepare_environment(self, environment: Environment, log: Logger) -> bool:
         # Ensure environment log directory is created before connecting to any nodes.
