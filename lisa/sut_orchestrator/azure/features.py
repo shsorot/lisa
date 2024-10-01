@@ -3237,9 +3237,9 @@ class AzureFileShare(AzureFeatureMixin, Feature):
         file_share_names: List[str],
         environment: Environment,
         allow_shared_key_access: bool = False,
-        sku="Standard_LRS",
-        kind="StorageV2",
-        enable_https_traffic_only=True,
+        sku: str="Standard_LRS",
+        kind: str="StorageV2",
+        enable_https_traffic_only: bool=True,
     ) -> Dict[str, str]:
         platform: AzurePlatform = self._platform  # type: ignore
         information = environment.get_information()
@@ -3258,7 +3258,7 @@ class AzureFileShare(AzureFeatureMixin, Feature):
             location=location,
             log=self._log,
             sku=sku,
-            kind=skind,
+            kind=kind,
             enable_https_traffic_only=enable_https_traffic_only,
             allow_shared_key_access=allow_shared_key_access,
         )
