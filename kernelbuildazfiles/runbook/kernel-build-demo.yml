@@ -67,7 +67,7 @@ transformer:
         repo: $(kernel_repo)
   - type: azure_vhd
     resource_group_name: $(build_vm_resource_group_name)
-    # storage_account_name: $(storage_account_name)
+    storage_account_name: $(storage_account_name)
     rename:
       azure_vhd_url: vhd
   - type: azure_delete

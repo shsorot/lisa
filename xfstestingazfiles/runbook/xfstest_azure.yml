@@ -21,13 +21,13 @@ variable:
   - name: concurrency
     value: 5
   - name: admin_private_key_file
-    value: "C:\\users\\shsorot\\.ssh\\id_rsa"
+    value: ""
     is_secret: true
   - name: admin_password
     value: ""
     is_secret: true
   - name: subscription_id
-    value: "c964f04a-1849-4181-8d96-d99900a5e0ed"
+    value: ""
   - name: fs_sku
     is_case_visible: True
     value: "Premium_LRS"

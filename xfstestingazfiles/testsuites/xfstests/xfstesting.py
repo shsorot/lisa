@@ -222,7 +222,7 @@ class Xfstesting(TestSuite):
             f"-o vers={self._smb_version},credentials=/etc/smbcredentials/lisa.cred"
             ",dir_mode=0777,file_mode=0777,serverino"
         )
-
+        log.info(f"Using mount options for info.config : {mount_opts}")
         random_str = generate_random_chars(string.ascii_lowercase + string.digits, 10)
         file_share_name = f"lisa{random_str}fs"
         scratch_name = f"lisa{random_str}scratch"
@@ -243,12 +243,16 @@ class Xfstesting(TestSuite):
                 _test_folder: fs_url_dict[file_share_name],
                 _scratch_folder: fs_url_dict[scratch_name],
             }
+            log.info(
+                f"Creating folders in storage account: {file_share_name} and {scratch_name}"
+            )
             azure_file_share.create_fileshare_folders(test_folders_share_dict)
 
             self._execute_xfstests(
                 log_path,
                 xfstests,
                 result,
+                test_type="cifs",
                 test_dev=fs_url_dict[file_share_name],
                 scratch_dev=fs_url_dict[scratch_name],
                 excluded_tests=self.excluded_tests + self.excluded_smb3_tests,

@@ -162,13 +162,32 @@ class Xfstests(Tool):
         data_disk: str = "",
         timeout: int = 14400,
     ) -> None:
-        self.run_async(
-            f"-g {test_type}/quick -E exclude.txt  > xfstest.log 2>&1",
-            sudo=True,
-            shell=True,
-            force_run=True,
-            cwd=self.get_xfstests_path(),
-        )
+        # We are passing section name here instead of group. This needs to be refactored later
+        # to indicate correct parameter convention
+        if "cifs" == test_type:
+            self.run_async(
+                f"-s cifs -E exclude.txt  > xfstest.log 2>&1",
+                sudo=True,
+                shell=True,
+                force_run=True,
+                cwd=self.get_xfstests_path(),
+            )
+        elif "nfs" == test_type:
+            self.run_async(
+                f"-s nfs -E exclude.txt  > xfstest.log 2>&1",
+                sudo=True,
+                shell=True,
+                force_run=True,
+                cwd=self.get_xfstests_path(),
+            )
+        else:
+            self.run_async(
+                f"-g {test_type}/quick -E exclude.txt  > xfstest.log 2>&1",
+                sudo=True,
+                shell=True,
+                force_run=True,
+                cwd=self.get_xfstests_path(),
+            )
 
         pgrep = self.node.tools[Pgrep]
         # this is the actual process name, when xfstests runs.
@@ -313,11 +332,20 @@ class Xfstests(Tool):
         if "generic" == test_type:
             test_type = "xfs"
         echo = self.node.tools[Echo]
-        if mount_opts:
+        if mount_opts and "cifs" == test_type:
             content = "\n".join(
                 [
                     "[cifs]",
                     "FSTYP=cifs",
+                    f"TEST_FS_MOUNT_OPTS='{mount_opts}'",
+                    f"MOUNT_OPTIONS='{mount_opts}'",
+                ]
+            )
+        elif mount_opts and "nfs" == test_type:
+            content = "\n".join(
+                [
+                    "[nfs]",
+                    "FSTYP=nfs",
                     f"TEST_FS_MOUNT_OPTS='{mount_opts}'",
                     f"MOUNT_OPTIONS='{mount_opts}'",
                 ]
