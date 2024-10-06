@@ -1,6 +1,6 @@
 name: azure default
-include:
-  - path: ./tiers/tier.yml
+extension:
+  - ../testsuites
 variable:
   - name: location
     value: "northeurope"
@@ -59,3 +59,10 @@ platform:
         vhd: $(vhd)
         location: $(location)
         vm_size: $(vm_size)
+testcase:
+  - criteria:
+      priority: 0
+    enabled: True
+  - criteria:
+      priority: 1
+    enabled: True

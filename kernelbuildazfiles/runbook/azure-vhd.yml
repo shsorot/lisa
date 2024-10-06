@@ -1,6 +1,6 @@
 name: azure vhd
 include:
-  - path: ./tiers/tier.yml
+  - path: ../../microsoft/runbook/tiers/tier.yml
 variable:
   # - name: azure-vhd
   #   value: ""

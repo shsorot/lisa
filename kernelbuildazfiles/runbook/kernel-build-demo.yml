@@ -6,7 +6,7 @@ tags:
 include:
   - path: "./azure-vhd.yml"
 extension:
-  - ../testsuites/
+  - ../../microsoft/testsuites/
 variable:
   - name: subscription_id
     value: ""
@@ -43,6 +43,8 @@ variable:
   - name: vhd
     value: ""
   - name: storage_account_name
+    value: ""
+  - name: custom_blob_name
     value: ""
 transformer:
   - type: azure_deploy
