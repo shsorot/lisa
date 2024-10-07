@@ -3263,6 +3263,58 @@ class AzureFileShare(AzureFeatureMixin, Feature):
             allow_shared_key_access=allow_shared_key_access,
         )
 
+        # Create file private endpoint
+        if enable_private_endpoint == True:
+            storage_account_resource_id = (
+                f"/subscriptions/{platform.subscription_id}/resourceGroups/"
+                f"{resource_group_name}/providers/Microsoft.Storage/storageAccounts"
+            )
+            # get vnet and subnet id
+            virtual_networks_dict: Dict[str, List[str]] = get_virtual_networks(
+                platform, resource_group_name
+            )
+            virtual_networks_id = ""
+            subnet_id = ""
+                virtual_networks_id = vnet_id
+                subnet_id = subnet_ids[0]
+                break
+
+            # Create Private endpoint
+            ipv4_address = create_update_private_endpoints(
+                platform,
+                resource_group_name,
+                location,
+                subnet_id,
+                storage_account_resource_id,
+                ["file"],
+            )
+
+            # create private zone
+            private_dns_zone_id = create_update_private_zones(
+                platform, resource_group_name, self._log
+            )
+            # Create private zone
+            private_dns_zone_id = create_update_private_zones(
+                platform, resource_group_name, self._log
+            )
+            # create records sets
+            create_update_record_sets(
+                platform, resource_group_name, str(ipv4_address), self._log
+            )
+            # create virtual network links for the private zone
+            create_update_virtual_network_links(
+                platform, resource_group_name, virtual_networks_id, self._log
+            )
+            # create private dns zone groups
+            create_update_private_dns_zone_groups(
+                platform=platform,
+                resource_group_name=resource_group_name,
+                private_dns_zone_id=str(private_dns_zone_id),
+                log=self._log,
+            )
+
+        # If private endpoints are enabled, the SMB endpoint https://<share>.file.core.windows.net
+        # will auto point to <share>.privatelink.file.core.windows.net
         for share_name in file_share_names:
             fs_url_dict[share_name] = get_or_create_file_share(
                 credential=platform.credential,
