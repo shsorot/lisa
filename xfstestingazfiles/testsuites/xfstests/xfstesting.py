@@ -309,6 +309,7 @@ class Xfstesting(TestSuite):
             )
             azure_file_share.create_fileshare_folders(test_folders_share_dict)
 
+            log.info(f"Running xfstesting with test_type: cifs")
             self._execute_xfstests(
                 log_path,
                 xfstests,
