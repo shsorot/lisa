@@ -230,6 +230,7 @@ class Xfstesting(TestSuite):
     _fs_sku: str = ""
     _fs_kind: str = ""
     _smb_version: str = ""
+    _enable_private_endpoint: bool = False
 
     def before_case(self, log: Logger, **kwargs: Any) -> None:
         node = kwargs["node"]
@@ -243,6 +244,7 @@ class Xfstesting(TestSuite):
         self._fs_kind = variables.get("fs_kind", "StorageV2")
         # Note: we fetch SMB version to check from user instead of using kernel function.
         self._smb_version = variables.get("smb_version", "3.1.1")
+        self._enable_private_endpoint = variables.get("enable_private_endpoint", False)
 
     @TestCaseMetadata(
         description="""
@@ -296,6 +298,7 @@ class Xfstesting(TestSuite):
                 sku=self._fs_sku,
                 kind=self._fs_kind,
                 allow_shared_key_access=True,
+                enable_private_endpoint=self._enable_private_endpoint,
             )
             test_folders_share_dict = {
                 _test_folder: fs_url_dict[file_share_name],

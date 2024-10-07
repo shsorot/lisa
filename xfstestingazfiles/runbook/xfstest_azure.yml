@@ -37,6 +37,9 @@ variable:
   - name: smb_version
     is_case_visible: True
     value: "3.1.1"
+  - name: enable_private_endpoint
+    is_case_visible: True
+    value: True
 concurrency: $(concurrency)
 notifier:
   - type: html
