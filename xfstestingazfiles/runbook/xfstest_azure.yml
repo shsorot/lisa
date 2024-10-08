@@ -5,7 +5,7 @@ variable:
   - name: location
     value: "northeurope"
   - name: keep_environment
-    value: "failed"
+    value: "no"
   - name: resource_group_name
     value: ""
   - name: marketplace_image
