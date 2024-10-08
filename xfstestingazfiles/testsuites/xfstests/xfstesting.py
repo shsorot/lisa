@@ -33,7 +33,7 @@ from lisa.sut_orchestrator.azure.features import AzureFileShare
 from lisa.sut_orchestrator.azure.platform_ import AzurePlatform
 from lisa.testsuite import TestResult
 from lisa.tools import Echo, FileSystem, KernelConfig, Mkfs, Mount, Parted
-from lisa.util import BadEnvironmentStateException, generate_random_chars
+from lisa.util import BadEnvironmentStateException, LisaException, generate_random_chars
 from xfstestingazfiles.testsuites.xfstests.xfstests import Xfstests
 
 # Constants
@@ -231,6 +231,7 @@ class Xfstesting(TestSuite):
     _fs_kind: str = ""
     _smb_version: str = ""
     _enable_private_endpoint: bool = False
+    _remove_storage_account: bool = True
 
     def before_case(self, log: Logger, **kwargs: Any) -> None:
         node = kwargs["node"]
@@ -320,10 +321,18 @@ class Xfstesting(TestSuite):
                 excluded_tests=self.excluded_tests + self.excluded_smb3_tests,
                 mount_opts=mount_opts,
             )
+        except LisaException:
+            log.info("exception raised when running xfstesting")
+            if environment.platform.runbook.keep_environment in ["always","failed"]:
+                self._remove_storage_account = False
+            else:
+                self._remove_storage_account = True
         finally:
-            # azure_file_share.delete_azure_fileshare([file_share_name, scratch_name])
-            # TODO: Figure out error code on failure so that this share can be preserved for inspection.
-            log.info(f"Deleting storage account with name: {file_share_name}")
+            if self._remove_storage_account is True:
+                log.info("Removing Storage account and file shares")
+                azure_file_share.delete_azure_fileshare([file_share_name, scratch_name])
+            else:
+                log.info("Preserving storage account and file shares")
 
     def after_case(self, log: Logger, **kwargs: Any) -> None:
         try:
