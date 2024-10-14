@@ -42,6 +42,7 @@ from lisa.environment import Environment
 from lisa.feature import Feature
 from lisa.features.availability import AvailabilityType
 from lisa.features.gpu import ComputeSDK
+from lisa.features.hibernation import HibernationSettings
 from lisa.features.resize import ResizeAction
 from lisa.features.security_profile import (
     FEATURE_NAME_SECURITY_PROFILE,
@@ -2195,7 +2196,7 @@ class Hibernation(AzureFeatureMixin, features.Hibernation):
             ]
             or raw_capabilities.get("HibernationSupported", None) == "True"
         ):
-            return schema.FeatureSettings.create(cls.name())
+            return HibernationSettings()
 
         return None
 
@@ -3263,9 +3264,9 @@ class AzureFileShare(AzureFeatureMixin, Feature):
             enable_https_traffic_only=enable_https_traffic_only,
             allow_shared_key_access=allow_shared_key_access,
         )
-
-        # If private endpoints are enabled, the SMB endpoint https://<share>.file.core.windows.net
-        # will auto point to <share>.privatelink.file.core.windows.net
+        # If enable_private_endpoint is true, SMB share endpoint
+        # will dns resolve to <share>.privatelink.file.core.windows.net
+        # No changes need to be done in code calling function
         for share_name in file_share_names:
             fs_url_dict[share_name] = get_or_create_file_share(
                 credential=platform.credential,
@@ -3276,9 +3277,10 @@ class AzureFileShare(AzureFeatureMixin, Feature):
                 resource_group_name=resource_group_name,
                 log=self._log,
             )
-
-        # Create file private endpoint, always after all shares are created
-        if enable_private_endpoint == True:
+        # Create file private endpoint, always after all shares have been created
+        # There is a known issue in API preventing access to data plane
+        # once private endpoint is created. Observed in Terraform provider as well
+        if enable_private_endpoint:
             storage_account_resource_id = (
                 f"/subscriptions/{platform.subscription_id}/resourceGroups/"
                 f"{resource_group_name}/providers/Microsoft.Storage/storageAccounts"
@@ -3304,11 +3306,6 @@ class AzureFileShare(AzureFeatureMixin, Feature):
                 storage_account_resource_id,
                 ["file"],
                 self._log,
-            )
-
-            # create private zone
-            private_dns_zone_id = create_update_private_zones(
-                platform, resource_group_name, self._log
             )
             # Create private zone
             private_dns_zone_id = create_update_private_zones(
