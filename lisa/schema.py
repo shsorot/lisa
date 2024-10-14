@@ -367,6 +367,12 @@ class FeatureSettings(
         return feature
 
     def check(self, capability: Any) -> search_space.ResultReason:
+        if not capability:
+            return search_space.ResultReason(
+                result=False,
+                reasons=["capability is None, it may be caused by preparation failed."],
+            )
+
         assert isinstance(capability, FeatureSettings), f"actual: {type(capability)}"
         # default FeatureSetting is a place holder, nothing to do.
         result = search_space.ResultReason()
@@ -584,6 +590,12 @@ class DiskOptionSettings(FeatureSettings):
         return super().__hash__()
 
     def check(self, capability: Any) -> search_space.ResultReason:
+        if not capability:
+            return search_space.ResultReason(
+                result=False,
+                reasons=["capability is None, it may be caused by preparation failed."],
+            )
+
         result = super().check(capability)
 
         result.merge(
@@ -763,6 +775,12 @@ class NetworkInterfaceOptionSettings(FeatureSettings):
         )
 
     def check(self, capability: Any) -> search_space.ResultReason:
+        if not capability:
+            return search_space.ResultReason(
+                result=False,
+                reasons=["capability is None, it may be caused by preparation failed."],
+            )
+
         assert isinstance(
             capability, NetworkInterfaceOptionSettings
         ), f"actual: {type(capability)}"
@@ -1487,6 +1505,9 @@ class TestCase(BaseTestCaseFilter):
             field_function=fields.Int, validate=validate.Range(min=0)
         ),
     )
+    # each test case will have this timeout
+    # if it is 0 it will use default timeout from test case
+    timeout: int = 0
     # each case with this rule will be run in a new environment.
     use_new_environment: bool = False
     # Once it's set, failed test result will be rewrite to success
