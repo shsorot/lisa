@@ -162,8 +162,8 @@ class Xfstests(Tool):
         data_disk: str = "",
         timeout: int = 14400,
     ) -> None:
-        # We are passing section name here instead of group. This needs to be refactored later
-        # to indicate correct parameter convention
+        # We are passing section name here instead of group.
+        # This needs to be refactored later
         if "cifs" == test_type:
             self.run_async(
                 f"-s cifs -E exclude.txt  > xfstest.log 2>&1",

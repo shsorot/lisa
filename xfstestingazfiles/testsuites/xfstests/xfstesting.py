@@ -321,24 +321,8 @@ class Xfstesting(TestSuite):
                 excluded_tests=self.excluded_tests + self.excluded_smb3_tests,
                 mount_opts=mount_opts,
             )
-        except LisaException:
-            log.info("exception raised when running xfstesting")
-            if environment.platform.runbook.keep_environment in ["always","failed"]:
-                log.info("Environment will be preserved.")
-                public_ip = node.public_address
-                log.info(f"Machine name: {node.name}, Public IP: {public_ip}")
-                log.info(f"Virtual machine name: {node.name}")
-                log.info(f"Storage account name: {fs_url_dict}")
-                for share_name, fqdn in fs_url_dict.items():
-                    log.info(f"File share name: {share_name}, FQDN: {fqdn}")
-            else:
-                log.info("Environment will be cleaned based on keep_environment parameter")
-        # finally:
-        #     if self._remove_storage_account is True:
-        #         log.info("Removing Storage account and file shares")
-        #         azure_file_share.delete_azure_fileshare([file_share_name, scratch_name])
-        #     else:
-        #         log.info("Preserving storage account and file shares")
+        finally:
+            log.info("Preserving storage account and file shares")
 
     def after_case(self, log: Logger, **kwargs: Any) -> None:
         try:
