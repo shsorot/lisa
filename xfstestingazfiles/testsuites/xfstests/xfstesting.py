@@ -105,11 +105,10 @@ def _prepare_azure_file_share(
 
 
 @TestSuiteMetadata(
-    area="storage",
-    category="community",
+    area="AZFiles",
+    category="Microsoft",
     description="""
-    This test suite is to validate different types of data disk on Linux VM
-     using xfstests.
+    This test suite is to validate AZfiles integration via xfstest.
     """,
 )
 class Xfstesting(TestSuite):
