@@ -69,41 +69,6 @@ def _prepare_data_disk(
         node.execute(f"mkdir {mount_point}", sudo=True)
 
 
-def _get_smb_version(node: Node) -> str:
-    if node.tools[KernelConfig].is_enabled("CONFIG_CIFS_SMB311"):
-        version = "3.1.1"
-    else:
-        version = "3.0"
-    return version
-
-
-def _prepare_azure_file_share(
-    node: Node,
-    account_credential: Dict[str, str],
-    test_folders_share_dict: Dict[str, str],
-    fstab_info: str,
-) -> None:
-    folder_path = node.get_pure_path("/etc/smbcredentials")
-    if node.shell.exists(folder_path):
-        node.execute(f"rm -rf {folder_path}", sudo=True)
-    node.shell.mkdir(folder_path)
-    file_path = node.get_pure_path("/etc/smbcredentials/lisa.cred")
-    echo = node.tools[Echo]
-    username = account_credential["account_name"]
-    password = account_credential["account_key"]
-    echo.write_to_file(f"username={username}", file_path, sudo=True, append=True)
-    echo.write_to_file(f"password={password}", file_path, sudo=True, append=True)
-    node.execute("cp -f /etc/fstab /etc/fstab_cifs", sudo=True)
-    for folder_name, share in test_folders_share_dict.items():
-        node.execute(f"mkdir {folder_name}", sudo=True)
-        echo.write_to_file(
-            f"{share} {folder_name} cifs {fstab_info}",
-            node.get_pure_path("/etc/fstab"),
-            sudo=True,
-            append=True,
-        )
-
-
 @TestSuiteMetadata(
     area="AZFiles",
     category="Microsoft",
@@ -111,7 +76,7 @@ def _prepare_azure_file_share(
     This test suite is to validate AZfiles integration via xfstest.
     """,
 )
-class Xfstesting(TestSuite):
+class Xfstesting_AZFilesSMB(TestSuite):
     # Use xfstests benchmark to test the different types of data disk,
     #  it will run many cases, so the runtime is longer than usual case.
     TIME_OUT = 14400
@@ -154,7 +119,7 @@ class Xfstesting(TestSuite):
         + " generic/126 generic/127 generic/193 generic/213 generic/245 generic/309 generic/314"
         + " generic/355 generic/453 generic/468 generic/471 generic/495 generic/623 generic/647"
         + " generic/003 generic/192 generic/004 generic/389 generic/509 generic/530 generic/531"
-        + " generic/008 generic/009 generic/011 generic/610 generic/012 generic/015 generic/019"
+        + " generic/008 generic/009 generic/610 generic/012 generic/015 generic/019"
         + " generic/027 generic/034 generic/039 generic/040 generic/041 generic/050 generic/056"
         + " generic/057 generic/059 generic/065 generic/066 generic/067 generic/073 generic/076"
         + " generic/081 generic/083 generic/090 generic/096 generic/101 generic/102 generic/104"
@@ -221,16 +186,18 @@ class Xfstesting(TestSuite):
         + " generic/627 generic/628 generic/629 generic/585 generic/596 generic/607 generic/614"
         + " generic/616 generic/617 generic/622 generic/631 generic/633 generic/644 generic/645"
         + " generic/636 generic/020 generic/337 generic/377 generic/417 generic/474 generic/486"
-        + " generic/508 generic/523 generic/533 generic/611 generic/618 generic/087 generic/088"
+        + " generic/508 generic/523 generic/533 generic/611 generic/618 generic/087"
         + " generic/089 generic/097 generic/125 generic/092 generic/093 generic/094"
     )
 
     excluded_smb2_tests = ()
     _fs_sku: str = ""
     _fs_kind: str = ""
-    _smb_version: str = ""
     _enable_private_endpoint: bool = False
     _remove_storage_account: bool = True
+    _mount_opts: str = ""
+    _testfs_mount_opts: str = ""
+    _test_cases: str = ""
 
     def before_case(self, log: Logger, **kwargs: Any) -> None:
         node = kwargs["node"]
@@ -242,9 +209,11 @@ class Xfstesting(TestSuite):
         self._fs_sku = variables.get("fs_sku", "Standard_LRS")
         # Use this to set storage account type
         self._fs_kind = variables.get("fs_kind", "StorageV2")
-        # Note: we fetch SMB version to check from user instead of using kernel function.
-        self._smb_version = variables.get("smb_version", "3.1.1")
         self._enable_private_endpoint = variables.get("enable_private_endpoint", False)
+        # SMB version is included in the mount options.
+        self._mount_opts = variables.get("mount_options", "")
+        self._testfs_mount_opts = variables.get("testfs_mount_options", "")
+        self._test_cases = variables.get("test_cases", "")
 
     @TestCaseMetadata(
         description="""
@@ -278,11 +247,29 @@ class Xfstesting(TestSuite):
         azure_file_share = node.features[AzureFileShare]
         # Deprecated, CONFIG_CIFS_SMB311  is no longer used in kernel, instead replaced with CONFIG_CIFS=y
         # version = azure_file_share.get_smb_version()
-        mount_opts = (
-            f"-o vers={self._smb_version},credentials=/etc/smbcredentials/lisa.cred"
-            ",dir_mode=0777,file_mode=0777,serverino"
+        if self._mount_opts:
+            mount_opts = self._mount_opts
+            if not mount_opts.startswith("-o "):
+                mount_opts = "-o " + mount_opts
+            if "credentials=/etc/smbcredentials/lisa.cred" not in mount_opts:
+                mount_opts += ",credentials=/etc/smbcredentials/lisa.cred"
+        else:
+            mount_opts = (
+                f"-o vers=3.1.1,credentials=/etc/smbcredentials/lisa.cred"
+                ",dir_mode=0777,file_mode=0777,serverino"
+            )
+        if self._testfs_mount_opts:
+            testfs_mount_opts = self._testfs_mount_opts
+            if not testfs_mount_opts.startswith("-o "):
+                testfs_mount_opts = "-o " + testfs_mount_opts
+            if "credentials=/etc/smbcredentials/lisa.cred" not in testfs_mount_opts:
+                testfs_mount_opts += ",credentials=/etc/smbcredentials/lisa.cred"
+        else:
+            testfs_mount_opts = mount_opts
+
+        log.info(
+            f"Using mount options for info.config -> mount_opts : {mount_opts}, test_mount_opts:{testfs_mount_opts}"
         )
-        log.info(f"Using mount options for info.config : {mount_opts}")
         random_str = generate_random_chars(string.ascii_lowercase + string.digits, 10)
         file_share_name = f"lisa{random_str}fs"
         scratch_name = f"lisa{random_str}scratch"
@@ -315,10 +302,12 @@ class Xfstesting(TestSuite):
                 xfstests,
                 result,
                 test_type="cifs",
+                test_cases=self._test_cases,
                 test_dev=fs_url_dict[file_share_name],
                 scratch_dev=fs_url_dict[scratch_name],
                 excluded_tests=self.excluded_tests + self.excluded_smb3_tests,
                 mount_opts=mount_opts,
+                testfs_mount_opts=testfs_mount_opts,
             )
         finally:
             log.info("Preserving storage account and file shares")
@@ -348,8 +337,10 @@ class Xfstesting(TestSuite):
         scratch_dev: str = "",
         file_system: FileSystem = FileSystem.xfs,
         test_type: str = "generic",
+        test_cases: str = "",
         excluded_tests: str = "",
         mount_opts: str = "",
+        testfs_mount_opts: str = "",
     ) -> Any:
         environment = result.environment
         assert environment, "fail to get environment from testresult"
@@ -376,17 +367,25 @@ class Xfstesting(TestSuite):
             )
 
         xfstests.set_local_config(
-            scratch_dev,
-            _scratch_folder,
-            test_dev,
-            _test_folder,
-            test_type,
-            mount_opts,
+            scratch_dev=scratch_dev,
+            scratch_mnt=_scratch_folder,
+            test_dev=test_dev,
+            test_folder=_test_folder,
+            test_type=test_type,
+            mount_opts=mount_opts,
+            testfs_mount_opts=testfs_mount_opts,
         )
         xfstests.set_excluded_tests(excluded_tests)
         # Reduce run_test timeout by 30s to let it complete before case Timeout
         # wait_processes interval in run_test is 10s, set to 30 for safety check
-        xfstests.run_test(test_type, log_path, result, data_disk, self.TIME_OUT - 30)
+        xfstests.run_test(
+            test_type=test_type,
+            log_path=log_path,
+            result=result,
+            data_disk=data_disk,
+            test_cases=test_cases,
+            timeout=self.TIME_OUT - 30,
+        )
 
     def _install_xfstests(self, node: Node) -> Xfstests:
         try:

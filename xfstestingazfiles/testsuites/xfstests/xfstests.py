@@ -41,6 +41,7 @@ class Xfstests(Tool):
         "dos2unix",
         "dump",
         "e2fsprogs",
+        "e2fsprogs-devel",
         "gawk",
         "gcc",
         "libtool",
@@ -48,12 +49,14 @@ class Xfstests(Tool):
         "make",
         "parted",
         "quota",
+        "quota-devel",
         "sed",
         "xfsdump",
         "xfsprogs",
         "indent",
         "python",
         "fio",
+        "dbench",
     ]
     debian_dep = [
         "libacl1-dev",
@@ -70,6 +73,9 @@ class Xfstests(Tool):
         "zlib1g-dev",
         "btrfs-tools",
         "btrfs-progs",
+        "libgdbm-compat-dev",
+        "liburing-dev",
+        "liburing2",
     ]
     fedora_dep = [
         "libtool",
@@ -85,6 +91,9 @@ class Xfstests(Tool):
         "btrfs-progs-devel",
         "llvm-ocaml-devel",
         "uuid-devel",
+        "libtool",
+        "e2fsprogs-devel",
+        "gdbm-devel",
     ]
     suse_dep = [
         "btrfsprogs",
@@ -160,13 +169,14 @@ class Xfstests(Tool):
         log_path: Path,
         result: TestResult,
         data_disk: str = "",
+        test_cases: str = "",
         timeout: int = 14400,
     ) -> None:
         # We are passing section name here instead of group.
         # This needs to be refactored later
         if "cifs" == test_type:
             self.run_async(
-                f"-s cifs -E exclude.txt  > xfstest.log 2>&1",
+                f"-s cifs -E exclude.txt {test_cases} > xfstest.log 2>&1",
                 sudo=True,
                 shell=True,
                 force_run=True,
@@ -174,7 +184,7 @@ class Xfstests(Tool):
             )
         elif "nfs" == test_type:
             self.run_async(
-                f"-s nfs -E exclude.txt  > xfstest.log 2>&1",
+                f"-s nfs -E exclude.txt {test_cases} > xfstest.log 2>&1",
                 sudo=True,
                 shell=True,
                 force_run=True,
@@ -182,7 +192,7 @@ class Xfstests(Tool):
             )
         else:
             self.run_async(
-                f"-g {test_type}/quick -E exclude.txt  > xfstest.log 2>&1",
+                f"-g {test_type}/quick -E exclude.txt {test_cases} > xfstest.log 2>&1",
                 sudo=True,
                 shell=True,
                 force_run=True,
@@ -324,6 +334,7 @@ class Xfstests(Tool):
         test_folder: str,
         test_type: str,
         mount_opts: str = "",
+        testfs_mount_opts: str = "",
     ) -> None:
         xfstests_path = self.get_xfstests_path()
         config_path = xfstests_path.joinpath("local.config")
@@ -337,7 +348,7 @@ class Xfstests(Tool):
                 [
                     "[cifs]",
                     "FSTYP=cifs",
-                    f"TEST_FS_MOUNT_OPTS='{mount_opts}'",
+                    f"TEST_FS_MOUNT_OPTS='{testfs_mount_opts if testfs_mount_opts else mount_opts}'",
                     f"MOUNT_OPTIONS='{mount_opts}'",
                 ]
             )
@@ -346,7 +357,7 @@ class Xfstests(Tool):
                 [
                     "[nfs]",
                     "FSTYP=nfs",
-                    f"TEST_FS_MOUNT_OPTS='{mount_opts}'",
+                    f"TEST_FS_MOUNT_OPTS='{testfs_mount_opts if testfs_mount_opts else mount_opts}'",
                     f"MOUNT_OPTIONS='{mount_opts}'",
                 ]
             )
