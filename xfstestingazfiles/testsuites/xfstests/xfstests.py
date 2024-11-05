@@ -27,6 +27,10 @@ from lisa.util import LisaException, UnsupportedDistroException, find_patterns_i
 class XfstestsResult:
     name: str = ""
     status: TestStatus = TestStatus.QUEUED
+    message: str = ""
+    runtime: str = ""
+    test_full_out: str = ""
+    test_out_bad: str = ""
 
 
 class Xfstests(Tool):
@@ -348,7 +352,8 @@ class Xfstests(Tool):
                 [
                     "[cifs]",
                     "FSTYP=cifs",
-                    f"TEST_FS_MOUNT_OPTS='{testfs_mount_opts if testfs_mount_opts else mount_opts}'",
+                    f"TEST_FS_MOUNT_OPTS='"
+                    f"{testfs_mount_opts if testfs_mount_opts else mount_opts}'",
                     f"MOUNT_OPTIONS='{mount_opts}'",
                 ]
             )
@@ -356,8 +361,9 @@ class Xfstests(Tool):
             content = "\n".join(
                 [
                     "[nfs]",
-                    "FSTYP=nfs",
-                    f"TEST_FS_MOUNT_OPTS='{testfs_mount_opts if testfs_mount_opts else mount_opts}'",
+                    "FSTYP=nfs",  # noqa: E501
+                    f"TEST_FS_MOUNT_OPTS='"
+                    f"{testfs_mount_opts if testfs_mount_opts else mount_opts}'",
                     f"MOUNT_OPTIONS='{mount_opts}'",
                 ]
             )
@@ -412,12 +418,38 @@ class Xfstests(Tool):
             x for x in all_cases if x not in not_run_cases and x not in fail_cases
         ]
         results: List[XfstestsResult] = []
+        xfstests_path = self.get_xfstests_path()
+        result_path = xfstests_path / "results" / test_type
         for case in fail_cases:
-            results.append(XfstestsResult(case, TestStatus.FAILED))
+            results.append(
+                XfstestsResult(
+                    name=case,
+                    status=TestStatus.FAILED,
+                    message=self.extract_case_content(case, raw_message),
+                    test_full_out=self.extract_file_content(
+                        str(result_path / f"{case}.full")
+                    ),
+                    test_out_bad=self.extract_file_content(
+                        str(result_path / f"{case}.out.bad")
+                    ),
+                )
+            )
         for case in pass_cases:
-            results.append(XfstestsResult(case, TestStatus.PASSED))
+            results.append(
+                XfstestsResult(
+                    name=case,
+                    status=TestStatus.PASSED,
+                    message=self.extract_case_content(case, raw_message),
+                )
+            )
         for case in not_run_cases:
-            results.append(XfstestsResult(case, TestStatus.SKIPPED))
+            results.append(
+                XfstestsResult(
+                    name=case,
+                    status=TestStatus.SKIPPED,
+                    message=self.extract_case_content(case, raw_message),
+                )
+            )
         for result in results:
             # create test result message
             info: Dict[str, Any] = {}
@@ -428,6 +460,7 @@ class Xfstests(Tool):
                 test_result=test_result,
                 test_case_name=result.name,
                 test_status=result.status,
+                test_message=result.message,
                 other_fields=info,
             )
 
@@ -490,14 +523,16 @@ class Xfstests(Tool):
                     )[0][0]
                 fail_cases_list = fail_cases.split()
                 raise LisaException(
-                    f"Fail {fail_count} cases of total {total_count}, fail cases"
-                    f" {fail_cases}, details {fail_info}, please investigate."
+                    f"Fail {fail_count} cases of total {total_count},\n fail cases"
+                    f" {fail_cases},\n details: \n{fail_info}, please investigate."
                 )
         finally:
             self.save_xfstests_log(fail_cases_list, log_path, test_type)
             results_folder = xfstests_path / "results/"
-            self.node.execute(f"rm -rf {results_folder}", sudo=True)
-            self.node.execute(f"rm -f {console_log_results_path}", sudo=True)
+            # Only cleanup if failed cases are 0
+            if fail_count == 0:
+                self.node.execute(f"rm -rf {results_folder}", sudo=True)
+                self.node.execute(f"rm -f {console_log_results_path}", sudo=True)
 
     def save_xfstests_log(
         self, fail_cases_list: List[str], log_path: Path, test_type: str
@@ -530,3 +565,30 @@ class Xfstests(Tool):
                 self.node.shell.copy_back(result_path, log_path / file_name)
             else:
                 self._log.debug(f"{file_name} doesn't exist.")
+
+    def extract_case_content(self, case: str, raw_message: str) -> str:
+        # Define the pattern to match the specific case and capture all
+        # content until the next <string>/<number> line
+        pattern = re.compile(rf"({case}.*?)(?=\n[a-zA-Z]+/\d+|\Z)", re.DOTALL)
+
+        # Search for the pattern in the raw_message
+        result = pattern.search(raw_message)
+
+        # Extract the matched content and remove the {case} from the start
+        if result:
+            extracted_content = result.group(1)
+            cleaned_content = re.sub(rf"^{case}\s*", "", extracted_content)
+            # Remove any string in [ ] at the start of the cleaned_content
+            cleaned_content = re.sub(r"^\[.*?\]\s*", "", cleaned_content)
+            return cleaned_content.strip()
+        else:
+            return ""
+
+    def extract_file_content(self, file_path: str) -> str:
+        # Use the cat tool to read the file content
+        if not Path(file_path).exists():
+            self._log.debug(f"{file_path} doesn't exist.")
+            return ""
+        cat_tool = self.node.tools[Cat]
+        file_content = cat_tool.run(file_path, force_run=True)
+        return str(file_content.stdout)

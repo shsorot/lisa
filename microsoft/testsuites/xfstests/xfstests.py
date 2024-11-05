@@ -163,7 +163,7 @@ class Xfstests(Tool):
         timeout: int = 14400,
     ) -> None:
         self.run_async(
-            f"-g {test_type}/quick -E exclude.txt  > xfstest.log 2>&1",
+            f"-g {test_type}/quick -E exclude.txt > xfstest.log 2>&1",
             sudo=True,
             shell=True,
             force_run=True,

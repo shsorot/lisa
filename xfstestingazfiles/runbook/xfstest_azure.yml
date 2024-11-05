@@ -42,13 +42,16 @@ variable:
     value: True
   - name: test_cases
     is_case_visible: True
-    value: "generic/001 generic/005 generic/006 generic/007 generic/010 generic/011 generic/013 generic/014 generic/024 generic/028 generic/029 generic/030 generic/036 generic/051 generic/068 generic/069 generic/070 generic/071 generic/074 generic/075 generic/080 generic/084 generic/086 generic/088 generic/091 generic/095 generic/098 generic/100 generic/109 generic/112 generic/113 generic/117 generic/123 generic/124 generic/125 generic/128 generic/129 generic/130 generic/131 generic/132 generic/133 generic/135 generic/141 generic/169 generic/184 generic/198 generic/207 generic/208 generic/209 generic/210 generic/211 generic/212 generic/214 generic/215 generic/221 generic/228 generic/239 generic/240 generic/241 generic/246 generic/247 generic/248 generic/249 generic/257 generic/258 generic/263 generic/286 generic/308 generic/310 generic/313 generic/315 generic/317 generic/323 generic/339 generic/340 generic/344 generic/345 generic/346 generic/354 generic/360 generic/390 generic/391 generic/393 generic/394 generic/406 generic/412 generic/422 generic/428 generic/430 generic/431 generic/432 generic/433 generic/437 generic/443 generic/450 generic/451 generic/452 generic/460 generic/461 generic/464 generic/465 generic/478 generic/491 generic/504 generic/505 generic/524 generic/528 generic/532 generic/538 generic/565 generic/568 generic/571 generic/590 generic/591 generic/598 generic/599 generic/604 generic/609 generic/614 generic/615 generic/632 generic/634 generic/635 generic/637 generic/638 generic/639 generic/646 generic/676 generic/680 generic/694 generic/696 generic/701 generic/708 generic/732 generic/736 generic/737 generic/738"
+    value: "generic/001 generic/005 generic/010 generic/013 generic/014 generic/024 generic/028 generic/029 generic/030 generic/036 generic/051 generic/068 generic/069 generic/070 generic/071 generic/080 generic/084 generic/086 generic/088 generic/095 generic/098 generic/100 generic/113 generic/123 generic/124 generic/125 generic/128 generic/129 generic/130 generic/131 generic/132 generic/135 generic/141 generic/169 generic/184 generic/198 generic/207 generic/208 generic/209 generic/210 generic/211 generic/212 generic/214 generic/215 generic/221 generic/228 generic/239 generic/240 generic/246 generic/248 generic/249 generic/257 generic/258 generic/286 generic/308 generic/313 generic/315 generic/317"
 concurrency: $(concurrency)
 notifier:
   - type: html
   - type: env_stats
   - type: junit
     include_subtest: true
+    include_passed_messages: false
+    include_failed_messages: true
+    include_skipped_messages: true
 platform:
   - type: azure
     admin_private_key_file: $(admin_private_key_file)

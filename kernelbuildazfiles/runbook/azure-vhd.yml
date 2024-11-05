@@ -11,7 +11,7 @@ variable:
   - name: concurrency
     value: 3
   - name: tier
-    value: 0
+    value: 3
   - name: keep_environment
     value: "yes"
 platform:
@@ -31,6 +31,8 @@ concurrency: $(concurrency)
 notifier:
   - type: html
   - type: env_stats
+  - type: junit
+    include_subtest: true
 transformer:
   - type: azure_delete
     resource_group_name: $(resource_group_name)
