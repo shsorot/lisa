@@ -36,3 +36,5 @@ dist
 notes
 
 selftests/test_runbook.yml
+.mypy_cache
+.idea
