@@ -19,7 +19,7 @@ from lisa.operating_system import (
     Ubuntu,
 )
 from lisa.testsuite import TestResult
-from lisa.tools import Cat, Chmod, Echo, Git, Make, Pgrep, Rm, Sed
+from lisa.tools import Cat, Chmod, Diff, Echo, Git, Ls, Make, Pgrep, Rm, Sed
 from lisa.util import LisaException, UnsupportedDistroException, find_patterns_in_lines
 
 
@@ -28,9 +28,6 @@ class XfstestsResult:
     name: str = ""
     status: TestStatus = TestStatus.QUEUED
     message: str = ""
-    runtime: str = ""
-    test_full_out: str = ""
-    test_out_bad: str = ""
 
 
 class Xfstests(Tool):
@@ -347,6 +344,7 @@ class Xfstests(Tool):
         if "generic" == test_type:
             test_type = "xfs"
         echo = self.node.tools[Echo]
+        # adding KEEP_DMESG creates a dmesg.log file in the results folder.
         if mount_opts and "cifs" == test_type:
             content = "\n".join(
                 [
@@ -355,6 +353,7 @@ class Xfstests(Tool):
                     f"TEST_FS_MOUNT_OPTS='"
                     f"{testfs_mount_opts if testfs_mount_opts else mount_opts}'",
                     f"MOUNT_OPTIONS='{mount_opts}'",
+                    f"KEEP_DMESG=yes",
                 ]
             )
         elif mount_opts and "nfs" == test_type:
@@ -365,6 +364,7 @@ class Xfstests(Tool):
                     f"TEST_FS_MOUNT_OPTS='"
                     f"{testfs_mount_opts if testfs_mount_opts else mount_opts}'",
                     f"MOUNT_OPTIONS='{mount_opts}'",
+                    f"KEEP_DMESG=yes",
                 ]
             )
         else:
@@ -372,6 +372,7 @@ class Xfstests(Tool):
                 [
                     f"[{test_type}]",
                     f"FSTYP={test_type}",
+                    f"KEEP_DMESG=yes",
                 ]
             )
         echo.write_to_file(content, config_path, append=True)
@@ -418,20 +419,12 @@ class Xfstests(Tool):
             x for x in all_cases if x not in not_run_cases and x not in fail_cases
         ]
         results: List[XfstestsResult] = []
-        xfstests_path = self.get_xfstests_path()
-        result_path = xfstests_path / "results" / test_type
         for case in fail_cases:
             results.append(
                 XfstestsResult(
                     name=case,
                     status=TestStatus.FAILED,
                     message=self.extract_case_content(case, raw_message),
-                    test_full_out=self.extract_file_content(
-                        str(result_path / f"{case}.full")
-                    ),
-                    test_out_bad=self.extract_file_content(
-                        str(result_path / f"{case}.out.bad")
-                    ),
                 )
             )
         for case in pass_cases:
@@ -456,6 +449,11 @@ class Xfstests(Tool):
             info["information"] = {}
             info["information"]["test_type"] = test_type
             info["information"]["data_disk"] = data_disk
+            info["information"]["test_details"] = str(
+                self.create_xfstest_stack_info(
+                    result.name, test_type, str(result.status.name)
+                )
+            )
             send_sub_test_result_message(
                 test_result=test_result,
                 test_case_name=result.name,
@@ -569,7 +567,10 @@ class Xfstests(Tool):
     def extract_case_content(self, case: str, raw_message: str) -> str:
         # Define the pattern to match the specific case and capture all
         # content until the next <string>/<number> line
-        pattern = re.compile(rf"({case}.*?)(?=\n[a-zA-Z]+/\d+|\Z)", re.DOTALL)
+        pattern = re.compile(
+            rf"({case}.*?)(?=\n[a-zA-Z]+/\d+|\nRan: |\nNot run: |\nFailures: |\nSECTION|\Z)",
+            re.DOTALL,
+        )
 
         # Search for the pattern in the raw_message
         result = pattern.search(raw_message)
@@ -592,3 +593,49 @@ class Xfstests(Tool):
         cat_tool = self.node.tools[Cat]
         file_content = cat_tool.run(file_path, force_run=True)
         return str(file_content.stdout)
+
+    def create_xfstest_stack_info(
+        self,
+        case: str,
+        test_type: str,
+        test_status: str,
+    ) -> str:
+        # Get XFSTest current path. we are looking at results/{test_type} directory here
+        xfstests_path = self.get_xfstests_path()
+        test_class = case.split("/")[0]
+        test_id = case.split("/")[1]
+        result_path = xfstests_path / f"results/{test_type}/{test_class}"
+        return_message: str = ""
+        if self.node.tools[Ls].path_exists(str(result_path), sudo=True):
+            # If this is a passed case, we only return DMESG content.
+            self._log.debug(
+                f"Found files in path {result_path} : "
+                f"{self.node.tools[Ls].list(str(result_path), sudo=True)}"
+            )
+
+            if test_status == "PASSED":
+                dmesg_result = self.node.tools[Cat].run(
+                    f"{result_path}/{test_id}.dmesg", force_run=True, sudo=True
+                )
+                return_message = f"DMESG: {dmesg_result.stdout}"
+            elif test_status == "FAILED":
+                dmesg_result = self.node.tools[Cat].run(
+                    f"{result_path}/{test_id}.dmesg", force_run=True, sudo=True
+                )
+                diff_result = self.node.tools[Diff].comparefiles(
+                    src=result_path / f"{test_id}.full",
+                    dest=result_path / f"{test_id}.out.bad",
+                )
+                return_message = f"DIFF: {diff_result}\n\nDMESG: {dmesg_result.stdout}"
+            elif test_status == "SKIPPED":
+                notrun_result = self.node.tools[Cat].run(
+                    f"{result_path}/{test_id}.notrun", force_run=True, sudo=True
+                )
+                return_message = f"NOTRUN: {notrun_result.stdout}"
+        else:
+            self._log.debug(f"No files found in path {result_path}")
+            return_message = f"No files found in path {result_path}"
+        self._log.debug(
+            f"Returning message from create_xfstest_stack_info : {return_message}"
+        )
+        return return_message
