@@ -19,7 +19,7 @@ from lisa import (
 )
 from lisa.operating_system import BSD, Oracle, Redhat, Windows
 from lisa.sut_orchestrator import AZURE
-from lisa.sut_orchestrator.azure.features import AzureFileShare
+from lisa.sut_orchestrator.azure.features import AzureFileShare, Nfs
 from lisa.sut_orchestrator.azure.platform_ import AzurePlatform
 from lisa.testsuite import TestResult
 from lisa.tools import FileSystem, KernelConfig, Mkfs, Mount, Parted
@@ -200,7 +200,7 @@ class XfstestingAzFilesSmb(TestSuite):
     excluded_smb2_tests = ""
     _fs_sku: str = ""
     _fs_kind: str = ""
-    _fs_protocol: str = ""
+    _fs_protocols: list[str] = []
     _enable_https_traffic_only: bool = True
     _enable_private_endpoint: bool = False
     _remove_storage_account: bool = True
@@ -217,7 +217,7 @@ class XfstestingAzFilesSmb(TestSuite):
         variables: Dict[str, Any] = kwargs["variables"]
         self._fs_sku = variables.get("fs_sku", "Standard_LRS")
         # Controls the file share protocol for this testing
-        self._fs_protocol = variables.get("fs_protocol", "SMB")
+        self._fs_protocols = variables.get("fs_protocols", ["SMB"])
         # Use this to set storage account type
         self._fs_kind = variables.get("fs_kind", "StorageV2")
         self._enable_private_endpoint = variables.get("enable_private_endpoint", False)
@@ -242,9 +242,12 @@ class XfstestingAzFilesSmb(TestSuite):
         use_new_environment=True,
         priority=1,
     )
-    def verify_azure_file_share(
+    def verify_azure_file_share_smb(
         self, log: Logger, log_path: Path, result: TestResult
     ) -> None:
+        # Test and skip test if not applicable
+        if "SMB" not in self._fs_protocols:
+            SkippedException("SMB protocol not enabled for this test case")
         environment = result.environment
         assert environment, "fail to get environment from testresult"
         assert isinstance(environment.platform, AzurePlatform)
@@ -260,7 +263,7 @@ class XfstestingAzFilesSmb(TestSuite):
         # instead replaced with CONFIG_CIFS=y
         # Check if the current node's kernel supports SMB 3.0 or 3.1.1
         kernel_config = node.tools[KernelConfig]
-        if not (kernel_config.is_enabled("CONFIG_CIFS")) and self._fs_protocol == "SMB":
+        if not (kernel_config.is_enabled("CONFIG_CIFS")):
             raise UnsupportedDistroException(
                 node.os, "current distro does not support SMB 3.0 or 3.1.1."
             )
@@ -269,28 +272,19 @@ class XfstestingAzFilesSmb(TestSuite):
             mount_opts = self._mount_opts
             if not mount_opts.startswith("-o "):
                 mount_opts = "-o " + mount_opts
-            if (
-                self._fs_protocol == "SMB"
-                and "credentials=/etc/smbcredentials/lisa.cred" not in mount_opts
-            ):
+            if "credentials=/etc/smbcredentials/lisa.cred" not in mount_opts:
                 mount_opts += ",credentials=/etc/smbcredentials/lisa.cred"
         else:
-            if self._fs_protocol == "SMB":
-                mount_opts = (
-                    "-o vers=3.1.1,credentials=/etc/smbcredentials/lisa.cred,"
-                    "dir_mode=0777,file_mode=0777,serverino"
-                )
-            else:
-                mount_opts = "-o vers=4,minorversion=1,_netdev,nofail,sec=sys 0 0"
+            mount_opts = (
+                "-o vers=3.1.1,credentials=/etc/smbcredentials/lisa.cred,"
+                "dir_mode=0777,file_mode=0777,serverino"
+            )
         # Configure mount points for test file system
         if self._testfs_mount_opts:
             testfs_mount_opts = self._testfs_mount_opts
             if not testfs_mount_opts.startswith("-o "):
                 testfs_mount_opts = "-o " + testfs_mount_opts
-            if (
-                self._fs_protocol == "SMB"
-                and "credentials=/etc/smbcredentials/lisa.cred" not in testfs_mount_opts
-            ):
+            if "credentials=/etc/smbcredentials/lisa.cred" not in testfs_mount_opts:
                 testfs_mount_opts += ",credentials=/etc/smbcredentials/lisa.cred"
         else:
             testfs_mount_opts = mount_opts
@@ -317,7 +311,6 @@ class XfstestingAzFilesSmb(TestSuite):
                 environment=environment,
                 sku=self._fs_sku,
                 kind=self._fs_kind,
-                protocols=self._fs_protocol,
                 allow_shared_key_access=True,
                 enable_private_endpoint=self._enable_private_endpoint,
             )
@@ -336,7 +329,7 @@ class XfstestingAzFilesSmb(TestSuite):
                 log_path,
                 xfstests,
                 result,
-                test_type="cifs" if self._fs_protocol == "SMB" else "nfs",
+                test_type="cifs",
                 test_cases=self._test_cases,
                 test_dev=fs_url_dict[file_share_name],
                 scratch_dev=fs_url_dict[scratch_name],

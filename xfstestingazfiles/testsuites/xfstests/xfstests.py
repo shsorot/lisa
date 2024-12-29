@@ -447,8 +447,10 @@ class Xfstests(Tool):
             # create test result message
             info: Dict[str, Any] = {}
             info["information"] = {}
-            info["information"]["test_type"] = test_type
-            info["information"]["data_disk"] = data_disk
+            if test_type:
+                info["information"]["test_type"] = test_type
+            if data_disk:
+                info["information"]["data_disk"] = data_disk
             info["information"]["test_details"] = str(
                 self.create_xfstest_stack_info(
                     result.name, test_type, str(result.status.name)

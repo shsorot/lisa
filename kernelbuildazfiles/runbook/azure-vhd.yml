@@ -24,7 +24,7 @@ platform:
       wait_delete: false
     requirement:
       azure:
-        hyperv_generation: 1
+        hyperv_generation: 2
         vhd: $(vhd)
         location: $(location)
 concurrency: $(concurrency)

@@ -5,7 +5,7 @@ variable:
   - name: location
     value: "northeurope"
   - name: keep_environment
-    value: "failed"
+    value: "no"
   - name: resource_group_name
     value: ""
   - name: marketplace_image
@@ -42,14 +42,17 @@ variable:
     value: True
   - name: test_cases
     is_case_visible: True
-    value: "generic/001 generic/005 generic/010 generic/013 generic/014 generic/024 generic/028 generic/029 generic/030 generic/036 generic/051 generic/068 generic/069 generic/070 generic/071 generic/080 generic/084 generic/086 generic/088 generic/095 generic/098 generic/100 generic/113 generic/123 generic/124 generic/125 generic/128 generic/129 generic/130 generic/131 generic/132 generic/135 generic/141 generic/169 generic/184 generic/198 generic/207 generic/208 generic/209 generic/210 generic/211 generic/212 generic/214 generic/215 generic/221 generic/228 generic/239 generic/240 generic/246 generic/248 generic/249 generic/257 generic/258 generic/286 generic/308 generic/313 generic/315 generic/317"
+    value: "generic/088 generic/001 generic/005 generic/123 generic/129"
+  - name: fs_protocols
+    is_case_visible: True
+    value: ["SMB"]
 concurrency: $(concurrency)
 notifier:
   - type: html
   - type: env_stats
   - type: junit
     include_subtest: true
-    include_passed_messages: false
+    include_passed_messages: true
     include_failed_messages: true
     include_skipped_messages: true
 platform:
@@ -66,6 +69,7 @@ platform:
       core_count:
         min: 2
       azure:
+        hyperv_generation: 2
         marketplace: $(marketplace_image)
         vhd: $(vhd)
         location: $(location)
