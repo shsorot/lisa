@@ -180,12 +180,21 @@ def try_connect(
 
             # Give it some time to process the command, otherwise reads on
             # stdout on calling contexts have been seen having empty strings
-            # from stdout, on Windows. There is a certain 3s penalty on Linux
-            # systems, as it's never ready for that (nonexisting) command, but
-            # that should only happen once per node (not per command)
-            tries = 3
-            while not stdout.channel.recv_ready() and tries:
-                sleep(1)
+            # from stdout, on Windows.When the recv_ready is False, Windows
+            # returns empty string. So it needs to wait recv_ready to True. But
+            # Linux doesn't support recv_ready, it's always False. So add the
+            # eof_sent for Linux and its readiness checks. When eof_sent is
+            # True, it means the send is done, and it's Linux. Combine both
+            # recv_ready and eof_sent to make sure the channel is ready for both
+            # Windows and Linux, and not block on both OSes. The logic has a 3
+            # seconds timeout, so if both of them are not support, it wait 3
+            # seconds.
+            tries = 30
+            while (
+                stdout.channel.recv_ready() is False
+                and stdout.channel.eof_sent is not True
+            ) and tries:
+                sleep(0.1)
                 tries -= 1
 
             stdin.channel.shutdown_write()
@@ -269,7 +278,11 @@ class SshShell(InitializableMixin):
             stdout = try_connect(self.connection_info, sock=sock)
         except Exception as identifier:
             raise LisaException(
-                f"failed to connect SSH "
+                "failed to connect SSH port of the VM. It might be due to one of the "
+                "following reasons: 1. Port 22 is not open. 2. The VM denies other "
+                "users' access. 3. The VM is refusing the private key authentication. "
+                "Please modify the relevant configurations and try again. Error details"
+                ": failed to connect "
                 f"[{self.connection_info.address}:{self.connection_info.port}], "
                 f"{identifier.__class__.__name__}: {identifier}"
             )

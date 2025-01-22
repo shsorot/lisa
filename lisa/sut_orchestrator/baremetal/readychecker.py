@@ -82,19 +82,13 @@ class FileSingleChecker(ReadyChecker):
         return os.path.exists(self.file_single_runbook.file)
 
 
-@dataclass_json()
-@dataclass
-class SshSchema(ReadyCheckerSchema):
-    ...
-
-
 class SshChecker(ReadyChecker):
     def __init__(
         self,
-        runbook: SshSchema,
+        runbook: ReadyCheckerSchema,
     ) -> None:
         super().__init__(runbook=runbook)
-        self.ssh_runbook: SshSchema = self.runbook
+        self.ssh_runbook: ReadyCheckerSchema = self.runbook
         self._log = get_logger("ssh", self.__class__.__name__)
 
     @classmethod
@@ -103,26 +97,27 @@ class SshChecker(ReadyChecker):
 
     @classmethod
     def type_schema(cls) -> Type[schema.TypedSchema]:
-        return SshSchema
+        return ReadyCheckerSchema
 
     def is_ready(self, node: Node) -> bool:
         context = get_node_context(node)
         remote_node = cast(RemoteNode, node)
+
+        assert context.client.connection, "connection is required for ssh checker"
+        connection = context.client.connection
         remote_node.set_connection_info(
-            address=context.connection.address,
-            public_port=context.connection.port,
-            username=context.connection.username,
-            password=cast(
-                str,
-                context.connection.password,
-            ),
-            private_key_file=cast(
-                str,
-                context.connection.private_key_file,
-            ),
+            address=connection.address,
+            port=connection.port,
+            username=connection.username,
+            password=connection.password,
+            private_key_file=connection.private_key_file,
+            use_public_address=False,
         )
         self._log.debug(f"try to connect to client: {node}")
-        try_connect(context.connection, ssh_timeout=self.ssh_runbook.timeout)
+        try_connect(
+            connection.get_connection_info(is_public=False),
+            ssh_timeout=self.ssh_runbook.timeout,
+        )
         self._log.debug("client has been connected successfully")
         return True
 
