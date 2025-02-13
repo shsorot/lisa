@@ -3560,12 +3560,14 @@ class AzureFileShare(AzureFeatureMixin, Feature):
         enable_https_traffic_only: bool = True,
         enable_private_endpoint: bool = False,
         quota_in_gb: int = 100,
+        storage_account_name: str = "",
     ) -> Dict[str, str]:
         platform: AzurePlatform = self._platform  # type: ignore
         information = environment.get_information()
         resource_group_name = self._resource_group_name
         location = information["location"]
-        storage_account_name = self._storage_account_name
+        if not storage_account_name:
+            storage_account_name = self._storage_account_name
 
         fs_url_dict: Dict[str, str] = {}
 
