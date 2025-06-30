@@ -29,6 +29,7 @@ from lisa.operating_system import (
     DebianRepositoryInfo,
     Fedora,
     FreeBSD,
+    Linux,
     Oracle,
     Posix,
     Redhat,
@@ -40,7 +41,18 @@ from lisa.operating_system import (
 from lisa.sut_orchestrator import AZURE, HYPERV, READY
 from lisa.sut_orchestrator.azure.features import AzureDiskOptionSettings
 from lisa.sut_orchestrator.azure.tools import Waagent
-from lisa.tools import Cat, Dmesg, Journalctl, Ls, Lsblk, Lscpu, Pgrep, Ssh, Swap
+from lisa.tools import (
+    Cat,
+    Dmesg,
+    Journalctl,
+    KernelConfig,
+    Ls,
+    Lsblk,
+    Lscpu,
+    Pgrep,
+    Ssh,
+    Swap,
+)
 from lisa.util import (
     LisaException,
     PassedException,
@@ -59,6 +71,11 @@ from lisa.util import (
     """,
 )
 class AzureImageStandard(TestSuite):
+    # These modules are essential for Hyper-V / Azure platform.
+    _essential_modules_configuration = {
+        "wdt": "CONFIG_WATCHDOG",
+        "cifs": "CONFIG_CIFS",
+    }
     # Defaults targetpw
     _uncommented_default_targetpw_regex = re.compile(
         r"(\nDefaults\s+targetpw)|(^Defaults\s+targetpw.*)"
@@ -421,7 +438,8 @@ class AzureImageStandard(TestSuite):
     @TestCaseMetadata(
         description="""
         This test will verify that network file exists in /etc/sysconfig and networking
-        is enabled on Fedora based distros.
+        is enabled on Fedora based distros. For Fedora version > 39, it checks if
+        /etc/NetworkManager/system-connections/ exists and is enabled.
 
         Steps:
         1. Verify that network file exists.
@@ -432,19 +450,57 @@ class AzureImageStandard(TestSuite):
     )
     def verify_network_file_configuration(self, node: Node) -> None:
         if isinstance(node.os, Fedora):
-            network_file_path = "/etc/sysconfig/network"
-            file_exists = node.shell.exists(PurePosixPath(network_file_path))
+            if node.os.information.version >= "39.0.0":
+                # Fedora 39 and later use NetworkManager
+                # Check if /etc/NetworkManager/system-connections/ exists
+                nm_connections_path = "/etc/NetworkManager/system-connections"
+                eth0_exists = node.shell.exists(
+                    PurePosixPath(f"{nm_connections_path}/eth0.nmconnection")
+                ) or node.shell.exists(
+                    PurePosixPath(f"{nm_connections_path}/cloud-init-eth0.nmconnection")
+                )
+                assert_that(
+                    eth0_exists,
+                    "A NetworkManager connection profile for eth0 or cloud-init-eth0"
+                    "should exist in /etc/NetworkManager/system-connections",
+                ).is_true()
+                connections = node.execute("nmcli -g NAME connection show", shell=True)
+                assert_that(
+                    "eth0" in connections.stdout
+                    or "cloud-init eth0" in connections.stdout,
+                    "A network connection for eth0 should exist in NetworkManager",
+                ).is_true()
+                # Check if the connections is active
+                eth0_active = node.execute("nmcli -g DEVICE,STATE device", shell=True)
+                assert_that(
+                    "eth0:connected" in eth0_active.stdout
+                    or "cloud-init eth0:connected" in eth0_active.stdout,
+                    "The eth0 connection should be active in NetworkManager",
+                ).is_true()
+            else:
+                # For fedora < 39, check if /etc/sysconfig/network file exists
+                network_file_path = "/etc/sysconfig/network"
+                file_exists = node.shell.exists(PurePosixPath(network_file_path))
 
-            assert_that(
-                file_exists,
-                f"The network file should be present at {network_file_path}",
-            ).is_true()
+                assert_that(
+                    file_exists,
+                    f"The network file should be present at {network_file_path}",
+                ).is_true()
+                assert_that(
+                    file_exists,
+                    f"The network file should be present at {network_file_path}",
+                ).is_true()
 
-            network_file = node.tools[Cat].read(network_file_path)
-            assert_that(
-                network_file.upper(),
-                f"networking=yes should be present in {network_file_path}",
-            ).contains("networking=yes".upper())
+                network_file = node.tools[Cat].read(network_file_path)
+                assert_that(
+                    network_file.upper(),
+                    f"networking=yes should be present in {network_file_path}",
+                ).contains("networking=yes".upper())
+                network_file = node.tools[Cat].read(network_file_path)
+                assert_that(
+                    network_file.upper(),
+                    f"networking=yes should be present in {network_file_path}",
+                ).contains("networking=yes".upper())
         elif isinstance(node.os, CBLMariner):
             network_file_path = "/etc/systemd/networkd.conf"
             file_exists = node.shell.exists(PurePosixPath(network_file_path))
@@ -468,25 +524,47 @@ class AzureImageStandard(TestSuite):
     )
     def verify_ifcfg_eth0(self, node: Node) -> None:
         if isinstance(node.os, Fedora):
-            ifcfg_eth0 = node.tools[Cat].read(
-                "/etc/sysconfig/network-scripts/ifcfg-eth0"
-            )
+            # Fedora 39 and later use NetworkManager and do not have ifcfg-eth0
+            if node.os.information.version >= "39.0.0":
+                # Check if the autoconnect is enabled for eth0
+                autoconnect_result = node.execute(
+                    "nmcli -g connection.autoconnect connection show"
+                    " 'cloud-init eth0'",
+                    shell=True,
+                )
+                assert_that(
+                    autoconnect_result.stdout.strip(),
+                    "connection.autoconnect should be 'yes' for eth0",
+                ).is_equal_to("yes")
+                # Check if the connection is set to use DHCP
+                dhcp_result = node.execute(
+                    "nmcli -g ipv4.method connection show 'cloud-init eth0'", shell=True
+                )
+                assert_that(
+                    dhcp_result.stdout.strip(),
+                    "connection.ipv4.method should be 'auto' for eth0",
+                ).is_equal_to("auto")
+            else:
+                # For Fedora versions < 39, check ifcfg-eth0 file
+                ifcfg_eth0 = node.tools[Cat].read(
+                    "/etc/sysconfig/network-scripts/ifcfg-eth0"
+                )
 
-            assert_that(
-                ifcfg_eth0,
-                "DEVICE=eth0 should be present in "
-                "/etc/sysconfig/network-scripts/ifcfg-eth0 file",
-            ).contains("DEVICE=eth0")
-            assert_that(
-                ifcfg_eth0,
-                "BOOTPROTO=dhcp should be present in "
-                "/etc/sysconfig/network-scripts/ifcfg-eth0 file",
-            ).contains("BOOTPROTO=dhcp")
-            assert_that(
-                ifcfg_eth0,
-                "ONBOOT=yes should be present in "
-                "/etc/sysconfig/network-scripts/ifcfg-eth0 file",
-            ).contains("ONBOOT=yes")
+                assert_that(
+                    ifcfg_eth0,
+                    "DEVICE=eth0 should be present in "
+                    "/etc/sysconfig/network-scripts/ifcfg-eth0 file",
+                ).contains("DEVICE=eth0")
+                assert_that(
+                    ifcfg_eth0,
+                    "BOOTPROTO=dhcp should be present in "
+                    "/etc/sysconfig/network-scripts/ifcfg-eth0 file",
+                ).contains("BOOTPROTO=dhcp")
+                assert_that(
+                    ifcfg_eth0,
+                    "ONBOOT=yes should be present in "
+                    "/etc/sysconfig/network-scripts/ifcfg-eth0 file",
+                ).contains("ONBOOT=yes")
         else:
             raise SkippedException(f"unsupported distro type: {type(node.os)}")
 
@@ -877,15 +955,20 @@ class AzureImageStandard(TestSuite):
 
     @TestCaseMetadata(
         description="""
-        This test will check the serial console is enabled from kernel command line.
+        This test verifies that Serial Console is properly enabled in the kernel
+        command line.
 
         Steps:
-        1. Get the kernel command line from /var/log/messages, /var/log/syslog,
-            dmesg, or journalctl output.
-        2. Check expected setting from kernel command line.
-            2.1. Expected to see 'console=ttyAMA0' for aarch64.
-            2.2. Expected to see 'console=ttyS0' for x86_64.
-            2.3. Expected to see 'uart0: console (115200,n,8,1)' for FreeBSD.
+        1. Check the kernel command line by "cat proc/cmdline" for the console device
+           1.1. Expected to see 'console=ttyAMA0' for aarch64.
+           1.2. Expected to see 'console=ttyS0' for x86_64.
+           FreeBSD doesn't have /proc/cmdline, then check the logs.
+        2. If there is no expected pattern, get the kernel command line from
+           /var/log/messages, /var/log/syslog, dmesg, or journalctl output.
+        3. Check expected setting from kernel command line.
+            3.1. Expected to see 'console [ttyAMA0] enabled' for aarch64.
+            3.2. Expected to see 'console [ttyS0] enabled' for x86_64.
+            3.3. Expected to see 'uart0: console (115200,n,8,1)' for FreeBSD.
         """,
         priority=1,
         requirement=simple_requirement(supported_platform_type=[AZURE, READY, HYPERV]),
@@ -903,11 +986,23 @@ class AzureImageStandard(TestSuite):
         lscpu = node.tools[Lscpu]
         arch = lscpu.get_architecture()
         current_console_device = console_device[arch]
+
+        # Check /proc/cmdline for the console device firstly
+        console_enabled_pattern = re.compile(rf"console={current_console_device}")
+        cmdline_path = "/proc/cmdline"
+        if not isinstance(node.os, FreeBSD):
+            cmdline = node.tools[Cat].read(cmdline_path)
+            if get_matched_str(cmdline, console_enabled_pattern):
+                # Pass the test
+                return
+
+        # Check logs for the console device
         console_enabled_pattern = re.compile(
             rf"^(.*console \[{current_console_device}\] enabled.*)$", re.M
         )
         freebsd_pattern = re.compile(r"^(.*uart0: console \(115200,n,8,1\).*)$", re.M)
         patterns = [console_enabled_pattern, freebsd_pattern]
+        key_word = "console"
         logs_checked = []
         pattern_found = False
         # Check dmesg output for the patterns if certain OS detected
@@ -929,7 +1024,9 @@ class AzureImageStandard(TestSuite):
             ]
             for log_file, tool in log_sources:
                 if node.shell.exists(node.get_pure_path(log_file)):
-                    current_log_output = tool.read(log_file, force_run=True, sudo=True)
+                    current_log_output = tool.read_with_filter(
+                        log_file, key_word, sudo=True, ignore_error=True
+                    )
                     if current_log_output:
                         logs_checked.append(log_file)
                         if any(find_patterns_in_lines(current_log_output, patterns)):
@@ -938,28 +1035,35 @@ class AzureImageStandard(TestSuite):
             # Check journalctl logs if patterns were not found in other log sources
             journalctl_tool = node.tools[Journalctl]
             if not pattern_found and journalctl_tool.exists:
-                current_log_output = journalctl_tool.first_n_logs_from_boot()
+                current_log_output = journalctl_tool.filter_logs_by_pattern(key_word)
                 if current_log_output:
                     logs_checked.append(f"{journalctl_tool.command}")
                     if any(find_patterns_in_lines(current_log_output, patterns)):
                         pattern_found = True
         # Raise an exception if the patterns were not found in any of the checked logs
         if not pattern_found:
+            # "Fail to find console enabled line" is the failure triage pattern. Please
+            # be careful when changing this string.
             raise LisaException(
                 "Fail to find console enabled line "
                 f"'console [{current_console_device}] enabled' "
                 "or 'uart0: console (115200,n,8,1)' "
-                f"from {', '.join(logs_checked)} output"
+                f"from {', '.join(logs_checked)} output. Serial console might not be "
+                "properly enabled in this image. Please set the kernel parameter to "
+                "enable diagnostic log for troubleshooting an issue related to VM "
+                "deployment."
             )
 
     @TestCaseMetadata(
         description="""
-        This test will check the /root/.bash_history not existing or is empty.
+        This test verifies that root bash history is either non-existent or empty in
+        the image.
 
         Steps:
-        1. Check .bash_history exist or not, if not, the image is prepared well.
-        2. If the .bash_history existed, check the content is empty or not, if not, the
-        image is not prepared well.
+        1. Check if /root/.bash_history file exists. If it doesn't exist, the test
+           passes as this indicates the image is properly prepared.
+        2. If /root/.bash_history exists, verify it is empty. If not empty, the test
+           fails as bash history should be cleared.
         """,
         priority=1,
         use_new_environment=True,
@@ -971,6 +1075,8 @@ class AzureImageStandard(TestSuite):
         if 0 == cmd_result.exit_code:
             cat = node.tools[Cat]
             bash_history = cat.read(path_bash_history, sudo=True)
+            # "bash_history is not empty" is the failure triage pattern. Please be
+            # careful when changing this string.
             assert_that(bash_history).described_as(
                 "/root/.bash_history is not empty. This could include private "
                 "information or plain-text credentials for other systems. It might be "
@@ -1079,12 +1185,19 @@ class AzureImageStandard(TestSuite):
 
     @TestCaseMetadata(
         description="""
-        This test will check ClientAliveInterval value in sshd config.
+        This test validates ClientAliveInterval setting in sshd config is present and
+        set to an appropriate value.
 
         Steps:
-        1. Find ClientAliveInterval from sshd config.
-        2. Pass with warning if not find it.
-        3. Pass with warning if the value is not between 0 and 180.
+        1. Examine the sshd_config file to locate the ClientAliveInterval parameter.
+           The default sshd config file is /etc/ssh/sshd_config. If the file is not
+           present, use command "find / -name sshd_config" to locate it.
+           For Ubuntu, the ClientAliveInterval is set in
+           /etc/ssh/sshd_config.d/50-cloudimg-settings.conf
+        2. Verify the parameter exists. The test fails if ClientAliveInterval is not
+           found.
+        3. Confirm the value is within the acceptable range (> 0 and < 181 ). The test
+           fails if the value is outside this range.
         """,
         priority=2,
         requirement=simple_requirement(supported_platform_type=[AZURE, READY, HYPERV]),
@@ -1096,10 +1209,13 @@ class AzureImageStandard(TestSuite):
         if not value:
             raise LisaException(f"not find {setting} in sshd_config")
         if not (int(value) > 0 and int(value) < 181):
+            # "The ClientAliveInterval configuration of OpenSSH is set to" is the
+            # failure triage pattern. Please be careful when changing this string.
             raise LisaException(
                 f"The {setting} configuration of OpenSSH is set to {int(value)} "
-                "seconds in this image. Please keep the client alive interval between "
-                "0 seconds and 180 seconds."
+                "seconds in this image. A properly configured ClientAliveInterval "
+                "helps maintain secure SSH connections. Please keep ClientAliveInterval"
+                " between 0 seconds and 180 seconds."
             )
 
     @TestCaseMetadata(
@@ -1310,6 +1426,9 @@ class AzureImageStandard(TestSuite):
         if current_version < minimum_version:
             waagent_auto_update_enabled = waagent.is_autoupdate_enabled()
             if not waagent_auto_update_enabled:
+                # "The waagent version.*is lower than the required version.*and auto
+                # update is not enabled" is the failure triage pattern. Please be
+                # careful when changing this string.
                 raise LisaException(
                     f"The waagent version {waagent_version} is lower than the required "
                     f"version {minimum_version} and auto update is not enabled. Please "
@@ -1379,7 +1498,7 @@ class AzureImageStandard(TestSuite):
 
         Steps:
         1. Retrieve the OS architecture using the Uname tool.
-        2. Verify that the architecture is either x86_64 (AMD64) or aarch64 (ARM64).
+        2. Verify that the architecture is either x86_64/amd64 or aarch64/arm64.
         3. Fail the test if the architecture is not 64-bit.
         """,
         priority=1,
@@ -1390,6 +1509,8 @@ class AzureImageStandard(TestSuite):
         arch = uname_tool.get_machine_architecture()
         arch_64bit = [CpuArchitecture.X64, CpuArchitecture.ARM64]
         if arch not in arch_64bit:
+            # "Architecture .* is not supported" is the failure triage pattern. Please
+            # be careful when changing this string.
             raise LisaException(
                 f"Architecture '{arch.value}' is not supported. Azure only supports "
                 f"64-bit architectures: {', '.join(str(a.value) for a in arch_64bit)}."
@@ -1398,8 +1519,7 @@ class AzureImageStandard(TestSuite):
     @TestCaseMetadata(
         description="""
         This test verifies the version of the Open Management Infrastructure (OMI)
-        version installed on the system is not vulnerable to the "OMIGOD"
-        vulnerabilities.
+        installed on the system is not vulnerable to the "OMIGOD" vulnerabilities.
 
         The "OMIGOD" vulnerabilities (CVE-2021-38647, CVE-2021-38648,
         CVE-2021-38645, CVE-2021-38649) were fixed in OMI version 1.6.8.1.
@@ -1444,12 +1564,14 @@ class AzureImageStandard(TestSuite):
             )
         except LisaException as e:
             if "lower than the required version" in str(e):
+                # "Vulnerable OMI version detected" is the failure triage pattern.
+                # Please be careful when changing this string.
                 raise LisaException(
                     f"Vulnerable OMI version detected. You have an OMI framework "
                     f"version less than {minimum_secure_version}. "
                     f"Please update OMI to the version {minimum_secure_version} or "
                     "later. For more information, please see the OMI update guidance at"
-                    " https://aka.ms/omi-updation."
+                    f" https://aka.ms/omi-updation. Error details: {e}"
                 ) from e
             elif "Failed to retrieve" in str(e):
                 node.log.info("OMI is not installed on the system. Pass the case.")
@@ -1457,7 +1579,8 @@ class AzureImageStandard(TestSuite):
                 raise LisaException(
                     "OMI is installed but could not determine version. Please verify "
                     "manually that the OMI version is at least "
-                    f"{minimum_secure_version} to prevent OMIGOD vulnerabilities."
+                    f"{minimum_secure_version} to prevent OMIGOD vulnerabilities. Error"
+                    f" details: {e}"
                 ) from e
 
     @TestCaseMetadata(
@@ -1475,11 +1598,16 @@ class AzureImageStandard(TestSuite):
         also has IO issues.
 
         Steps:
-        1. Use 'cat /proc/swaps' or 'swapon -s' list all swap devices
+        1. Use 'cat /proc/swaps' or 'swapon -s' to list all swap devices
             Note: For FreeBSD, use 'swapinfo -k'.
-        2. Use 'lsblk' to identify the OS disk and get all the partitions
+        2. Use 'lsblk <swap_part> -P -o NAME' to get the real block device name for
+           each swap partition. If there is no swap partition, pass the case.
+        3. Use 'lsblk' to identify the OS disk and get all its partitions and logical
+           devices through matching the mount point '/'.
             Note: For FreeBSD, if there is no lsblk, install it and run the command
-        3. Verify that no swap partition exists on the OS disk
+        4. Compare if the device name of each swap partition is the same as the device
+           name of one OS disk partition or logical device. If yes, fail the case.
+        5. Pass the case if no swap partition is found on the OS disk.
         """,
         priority=1,
         requirement=simple_requirement(supported_platform_type=[AZURE]),
@@ -1491,23 +1619,53 @@ class AzureImageStandard(TestSuite):
             return
         node.log.info(f"Swap partitions: {swap_parts}")
 
+        # For some images like audiocodes audcovoc acovoce4azure 8.4.591, the swap
+        # partition is created on a logical device, such as /dev/dm-5. In this case,
+        # we need to get the real block device name.
         lsblk = node.tools[Lsblk]
         os_disk = lsblk.find_disk_by_mountpoint("/")
-        # e.g. os_disk_partitions: ['sda1', 'sda2']
-        os_disk_partitions = [part.name for part in os_disk.partitions]
-        node.log.info(f"OS disk partitions: {os_disk_partitions}")
-
         for swap_part in swap_parts:
-            for os_part in os_disk_partitions:
-                if os_part in swap_part:
-                    raise LisaException(
-                        f"Swap partition '{swap_part}' found on OS disk. There should"
-                        "  be no Swap Partition on OS Disk. OS disk has IOPS limit. "
-                        "When memory pressure causes swapping, IOPS limit may be "
-                        "reached easily and cause VM performance to go down "
-                        "disastrously, because aside from memory issues in now also "
-                        "has IO issues."
-                    )
+            block_name = lsblk.get_block_name(swap_part)
+            if block_name == "":
+                raise LisaException(
+                    f"Failed to get the device name for swap partition '{swap_part}'."
+                )
+            node.log.info(f"Swap partition '{swap_part}' is on device '{block_name}'.")
+            for part in os_disk.partitions:
+                # e.g. 'sda1', 'vg-root', 'vg-home'
+                parts = [part] + part.logical_devices
+                for p in parts:
+                    node.log.info(f"OS disk partition or logical device: {p.name}")
+                    if p.name == block_name:
+                        # "Swap partition .* is found on OS disk" is a failure triage
+                        # pattern. Please be careful when changing this string.
+                        raise LisaException(
+                            f"Swap partition '{swap_part}' is found on OS disk "
+                            f"partition or logical device '{p.name}'. There should be "
+                            "no Swap Partition on OS Disk. OS disk has IOPS limit. "
+                            "When memory pressure causes swapping, IOPS limit may be "
+                            "reached easily and cause VM performance to go down "
+                            "disastrously, as aside from memory issues in now also has"
+                            " IO issues."
+                        )
+
+    @TestCaseMetadata(
+        description="""
+        This test case verifies the enablement of essential kernel modules like wdt and
+        cifs.
+        """,
+        priority=1,
+    )
+    def verify_essential_kernel_modules(self, node: Node) -> None:
+        if not isinstance(node.os, Linux):
+            raise SkippedException(
+                "This test is only applicable for Linux distributions."
+            )
+        not_enabled_modules = self._get_not_enabled_modules(node)
+
+        assert_that(not_enabled_modules).described_as(
+            "Not enabled essential kernel modules for Hyper-V / Azure platform found."
+        ).is_length(0)
 
     def _verify_version_by_pattern_value(
         self,
@@ -1563,6 +1721,10 @@ class AzureImageStandard(TestSuite):
         #
         # e.g. the version of OMI has the format of "1.9.0-1". Changing it to "1.9.0.1"
         # allows proper comparison with the minimum version.
+        #
+        # "The .* version .* is lower than the required version .* Please update .* to
+        # a version.*" is the failure triage pattern. Please be careful when changing
+        # this string.
         current_version = Version(match.group(group_index).replace("-", "."))
         if current_version < minimum_version:
             message = (
@@ -1583,3 +1745,17 @@ class AzureImageStandard(TestSuite):
                 raise LisaException(message + action_message)
             elif not extended_support_versions:
                 raise LisaException(message + action_message)
+
+    def _get_not_enabled_modules(self, node: Node) -> List[str]:
+        """
+        Returns the list of essential kernel modules that are neither integrated
+        into the kernel nor compiled as loadable modules.
+        """
+        not_enabled_modules = []
+
+        for module in self._essential_modules_configuration:
+            if not node.tools[KernelConfig].is_enabled(
+                self._essential_modules_configuration[module]
+            ):
+                not_enabled_modules.append(module)
+        return not_enabled_modules
