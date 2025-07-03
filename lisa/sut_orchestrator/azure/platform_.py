@@ -748,7 +748,10 @@ class AzurePlatform(Platform):
                 information[
                     "security_profile"
                 ] = security_profile.security_profile.value
-                if security_profile.security_profile == SecurityProfileType.CVM:
+                if (
+                    security_profile.security_profile == SecurityProfileType.CVM
+                    and isinstance(security_profile.encrypt_disk, bool)
+                ):
                     information["encrypt_disk"] = security_profile.encrypt_disk
 
             if node.capture_kernel_config:
@@ -1125,7 +1128,7 @@ class AzurePlatform(Platform):
                                 continue
                             resource_sku = sku_obj.as_dict()
                             capability = self._resource_sku_to_capability(
-                                location, sku_obj
+                                location, sku_obj, self._log
                             )
 
                             # estimate vm cost for priority
@@ -1794,8 +1797,9 @@ class AzurePlatform(Platform):
             ]
         )
 
+    @classmethod
     def _resource_sku_to_capability(  # noqa: C901
-        self, location: str, resource_sku: ResourceSku
+        cls, location: str, resource_sku: ResourceSku, log: Logger
     ) -> schema.NodeSpace:
         # fill in default values, in case no capability meet.
         node_space = schema.NodeSpace(
@@ -1923,7 +1927,7 @@ class AzurePlatform(Platform):
                         schema.DiskControllerType(allowed_type)
                     )
                 except ValueError:
-                    self._log.error(
+                    log.error(
                         f"'{allowed_type}' is not a known Disk Controller Type "
                         f"({[x for x in schema.DiskControllerType]})"
                     )
@@ -1947,7 +1951,7 @@ class AzurePlatform(Platform):
                             DiskPlacementType(allowed_type)
                         )
                     except ValueError:
-                        self._log.error(
+                        log.error(
                             f"'{allowed_type}' is not a known Ephemeral Disk Placement"
                             f" Type "
                             f"({[x for x in DiskPlacementType]})"
@@ -2052,7 +2056,7 @@ class AzurePlatform(Platform):
         else:
             node_space.disk.has_resource_disk = False
 
-        for supported_feature in self.supported_features():
+        for supported_feature in cls.supported_features():
             if supported_feature.name() in [
                 features.Disk.name(),
                 features.NetworkInterface.name(),
