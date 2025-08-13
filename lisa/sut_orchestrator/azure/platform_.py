@@ -1,5 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
+import ast
 import copy
 import json
 import logging
@@ -31,7 +32,7 @@ from azure.mgmt.compute.models import (
     VirtualMachineImage,
 )
 from azure.mgmt.marketplaceordering.models import AgreementTerms  # type: ignore
-from azure.mgmt.resource import SubscriptionClient  # type: ignore
+from azure.mgmt.resource import FeatureClient, SubscriptionClient  # type: ignore
 from azure.mgmt.resource.resources.models import (  # type: ignore
     Deployment,
     DeploymentMode,
@@ -62,6 +63,7 @@ from lisa.features.availability import AvailabilityType
 from lisa.node import Node, RemoteNode, local
 from lisa.platform_ import Platform
 from lisa.secret import add_secret
+from lisa.sut_orchestrator import platform_utils
 from lisa.tools import Dmesg, Hostname, KernelConfig, Modinfo, Whoami
 from lisa.tools.lsinitrd import Lsinitrd
 from lisa.util import (
@@ -80,6 +82,7 @@ from lisa.util import (
     get_first_combination,
     get_matched_str,
     get_or_generate_key_pairs,
+    get_public_ip,
     get_public_key_data,
     is_unittest,
     plugin_manager,
@@ -199,6 +202,7 @@ KEY_MANA_DRIVER_ENABLED = "mana_driver_enabled"
 KEY_NVME_ENABLED = "nvme_enabled"
 ATTRIBUTE_FEATURES = "features"
 
+
 CLOUD: Dict[str, Dict[str, Any]] = {
     "azurecloud": AZURE_PUBLIC_CLOUD,
     "azurechinacloud": AZURE_CHINA_CLOUD,
@@ -277,6 +281,7 @@ class AzurePlatformSchema:
     # specify shared resource group location
     shared_resource_group_location: str = field(default=RESOURCE_GROUP_LOCATION)
     resource_group_managed_by: str = field(default="")
+    resource_group_tags: Optional[Dict[str, str]] = field(default=None)
     # specify the locations which used to retrieve marketplace image information
     # example: westus, westus2
     marketplace_image_information_location: Optional[Union[str, List[str]]] = field(
@@ -294,8 +299,15 @@ class AzurePlatformSchema:
     vm_tags: Optional[Dict[str, Any]] = field(default=None)
     tags: Optional[Dict[str, Any]] = field(default=None)
     use_public_address: bool = field(default=True)
+    create_public_address: bool = field(default=True)
     use_ipv6: bool = field(default=False)
     ip_service_tags: Optional[Dict[str, str]] = field(default=None)
+    # Default outbound access is disabled for better security and control.
+    # As of September 30, 2025, default outbound access for new deployments
+    # will be retired. It's recommended to disable outbound access to
+    # enforce explicit connectivity rules.
+    enable_vm_nat: bool = field(default=False)
+    source_address_prefixes: Optional[Union[str, List[str]]] = field(default=None)
 
     virtual_network_resource_group: str = field(default="")
     virtual_network_name: str = field(default=AZURE_VIRTUAL_NETWORK_NAME)
@@ -328,6 +340,8 @@ class AzurePlatformSchema:
     wait_delete: bool = False
     # the AzCopy path can be specified if use this tool to copy blob
     azcopy_path: str = field(default="")
+    # timeout for deployment operations in seconds (default: 60 minutes)
+    provisioning_timeout: int = field(default=3600)
 
     def __post_init__(self, *args: Any, **kwargs: Any) -> None:
         strip_strs(
@@ -350,6 +364,9 @@ class AzurePlatformSchema:
                 "subnet_prefix",
                 "use_public_address",
                 "use_ipv6",
+                "enable_vm_nat",
+                "source_address_prefixes",
+                "create_public_address",
             ],
         )
 
@@ -449,6 +466,8 @@ class AzurePlatform(Platform):
             KEY_WALA_VERSION: self._get_wala_version,
             KEY_WALA_DISTRO_VERSION: self._get_wala_distro_version,
             KEY_HARDWARE_PLATFORM: self._get_hardware_platform,
+            platform_utils.KEY_VMM_VERSION: platform_utils.get_vmm_version,
+            platform_utils.KEY_MSHV_VERSION: platform_utils.get_mshv_version,
         }
 
     @classmethod
@@ -615,6 +634,7 @@ class AzurePlatform(Platform):
                         location=location,
                         log=log,
                         managed_by=self.resource_group_managed_by,
+                        resource_group_tags=self._azure_runbook.resource_group_tags,
                     )
                 else:
                     log.info(f"reusing resource group: [{resource_group_name}]")
@@ -626,9 +646,8 @@ class AzurePlatform(Platform):
                     environment_context.provision_time = time.elapsed()
                 # Even skipped deploy, try best to initialize nodes
                 self.initialize_environment(environment, log)
-            except Exception as identifier:
-                self._delete_environment(environment, log)
-                raise identifier
+            except Exception as e:
+                raise e
 
     def _delete_environment(self, environment: Environment, log: Logger) -> None:
         environment_context = get_environment_context(environment=environment)
@@ -665,8 +684,8 @@ class AzurePlatform(Platform):
                 delete_operation = self._rm_client.resource_groups.begin_delete(
                     resource_group_name
                 )
-            except Exception as identifier:
-                log.debug(f"exception on delete resource group: {identifier}")
+            except Exception as e:
+                log.debug(f"exception on delete resource group: {e}")
             if delete_operation and self._azure_runbook.wait_delete:
                 wait_operation(
                     delete_operation, failure_identity="delete resource group"
@@ -710,8 +729,8 @@ class AzurePlatform(Platform):
                 value = method(node)
                 if value:
                     information[key] = value
-            except Exception as identifier:
-                node.log.exception(f"error on get {key}.", exc_info=identifier)
+            except Exception as e:
+                node.log.exception(f"error on get {key}.", exc_info=e)
 
         if node.is_connected and node.is_posix:
             node.log.debug("detecting lis version...")
@@ -731,7 +750,10 @@ class AzurePlatform(Platform):
                 information[
                     "security_profile"
                 ] = security_profile.security_profile.value
-                if security_profile.security_profile == SecurityProfileType.CVM:
+                if (
+                    security_profile.security_profile == SecurityProfileType.CVM
+                    and isinstance(security_profile.encrypt_disk, bool)
+                ):
                     information["encrypt_disk"] = security_profile.encrypt_disk
 
             if node.capture_kernel_config:
@@ -768,10 +790,10 @@ class AzurePlatform(Platform):
         result: str = ""
         try:
             result = node.features[Disk].get_hardware_disk_controller_type()
-        except Exception as identifier:
+        except Exception as e:
             # it happens on some error vms. Those error should be caught earlier in
             # test cases not here. So ignore any error here to collect information only.
-            node.log.debug(f"error on collecting disk controller type: {identifier}")
+            node.log.debug(f"error on collecting disk controller type: {e}")
         return result
 
     def _get_kernel_version(self, node: Node) -> str:
@@ -786,7 +808,6 @@ class AzurePlatform(Platform):
                 node.log.debug("detecting kernel version from serial log...")
                 serial_console = node.features[features.SerialConsole]
                 result = serial_console.get_matched_str(KERNEL_VERSION_PATTERN)
-
         return result
 
     def _get_host_version(self, node: Node) -> str:
@@ -799,10 +820,10 @@ class AzurePlatform(Platform):
                 result = get_matched_str(
                     dmesg.get_output(), HOST_VERSION_PATTERN, first_match=False
                 )
-        except Exception as identifier:
+        except Exception as e:
             # it happens on some error vms. Those error should be caught earlier in
             # test cases not here. So ignore any error here to collect information only.
-            node.log.debug(f"error on run dmesg: {identifier}")
+            node.log.debug(f"error on run dmesg: {e}")
 
         # skip for Windows
         if not node.is_connected or node.is_posix:
@@ -823,10 +844,10 @@ class AzurePlatform(Platform):
                 node.log.debug("detecting hardware platform from uname...")
                 uname_tool = node.tools[Uname]
                 result = uname_tool.get_linux_information().hardware_platform
-        except Exception as identifier:
+        except Exception as e:
             # it happens on some error vms. Those error should be caught earlier in
             # test cases not here. So ignore any error here to collect information only.
-            node.log.debug(f"error on run uname: {identifier}")
+            node.log.debug(f"error on run uname: {e}")
 
         return result
 
@@ -838,10 +859,10 @@ class AzurePlatform(Platform):
                 node.log.debug("detecting wala version from waagent...")
                 waagent = node.tools[Waagent]
                 result = waagent.get_version()
-        except Exception as identifier:
+        except Exception as e:
             # it happens on some error vms. Those error should be caught earlier in
             # test cases not here. So ignore any error here to collect information only.
-            node.log.debug(f"error on run waagent: {identifier}")
+            node.log.debug(f"error on run waagent: {e}")
 
         if not node.is_connected or node.is_posix:
             if not result and hasattr(node, ATTRIBUTE_FEATURES):
@@ -857,10 +878,10 @@ class AzurePlatform(Platform):
             if node.is_connected and node.is_posix:
                 waagent = node.tools[Waagent]
                 result = waagent.get_distro_version()
-        except Exception as identifier:
+        except Exception as e:
             # it happens on some error vms. Those error should be caught earlier in
             # test cases not here. So ignore any error here to collect information only.
-            node.log.debug(f"error on get waagent distro version: {identifier}")
+            node.log.debug(f"error on get waagent distro version: {e}")
 
         return result
 
@@ -873,6 +894,7 @@ class AzurePlatform(Platform):
         result[AZURE_RG_NAME_KEY] = get_environment_context(
             environment
         ).resource_group_name
+
         if azure_runbook.availability_set_properties:
             for (
                 property_name,
@@ -933,6 +955,8 @@ class AzurePlatform(Platform):
         self.subscription_id = azure_runbook.subscription_id
         self.cloud = azure_runbook.cloud
         self.resource_group_managed_by = azure_runbook.resource_group_managed_by
+        self._cached_ip_address: List[str] = []
+        self._cached_byoip_registered: Optional[bool] = None
 
         self._initialize_credential()
 
@@ -944,11 +968,43 @@ class AzurePlatform(Platform):
             azure_runbook.shared_resource_group_location,
             self._log,
             azure_runbook.resource_group_managed_by,
+            azure_runbook.resource_group_tags,
         )
 
         self._rm_client = get_resource_management_client(
             self.credential, self.subscription_id, self.cloud
         )
+
+    def _get_ip_addresses(self) -> List[str]:
+        if self._cached_ip_address:
+            return self._cached_ip_address
+
+        prefixes = self._azure_runbook.source_address_prefixes
+        result: List[str] = []
+
+        if prefixes:
+            if isinstance(prefixes, str):
+                try:
+                    parsed = ast.literal_eval(prefixes)
+                    if isinstance(parsed, list):
+                        result = parsed
+                    else:
+                        result = prefixes.split(",")
+                except (ValueError, SyntaxError):
+                    result = prefixes.split(",")
+            elif isinstance(prefixes, list):
+                result = prefixes
+            else:
+                raise LisaException(
+                    f"Invalid type for source_address_prefixes: {type(prefixes)}"
+                )
+
+            self._cached_ip_address = [
+                p.strip() for p in result if isinstance(p, str) and p.strip()
+            ]
+        else:
+            self._cached_ip_address = [get_public_ip()]
+        return self._cached_ip_address
 
     def _initialize_credential(self) -> None:
         azure_runbook = self._azure_runbook
@@ -990,7 +1046,7 @@ class AzurePlatform(Platform):
 
                 cached_credential = get_static_access_token(
                     azure_runbook.azure_arm_access_token
-                ) or DefaultAzureCredential(
+                ) or DefaultAzureCredential(  # CodeQL [SM05139] Okay use of DefaultAzureCredential as it is only used in development # noqa E501
                     authority=self.cloud.endpoints.active_directory,
                 )
 
@@ -1074,7 +1130,7 @@ class AzurePlatform(Platform):
                                 continue
                             resource_sku = sku_obj.as_dict()
                             capability = self._resource_sku_to_capability(
-                                location, sku_obj
+                                location, sku_obj, self._log
                             )
 
                             # estimate vm cost for priority
@@ -1087,9 +1143,12 @@ class AzurePlatform(Platform):
                                 resource_sku=resource_sku,
                             )
                             all_skus[azure_capability.vm_size] = azure_capability
-                    except Exception as identifier:
+                    except Exception as e:
                         log.error(f"unknown sku: {sku_obj}")
-                        raise identifier
+                        raise e
+            plugin_manager.hook.azure_update_vm_capabilities(
+                location=location, capabilities=all_skus
+            )
             location_data = AzureLocation(location=location, capabilities=all_skus)
             log.debug(f"{location}: saving to disk")
             with open(cached_file_name, "w") as f:
@@ -1126,12 +1185,18 @@ class AzurePlatform(Platform):
             arm_parameters.availability_options,
             availability_copied_fields,
         )
+        if self._is_byoip_feature_registered():
+            arm_parameters.ip_service_tags["FirstPartyUsage"] = "/SyntheticLoad"
 
         arm_parameters.virtual_network_resource_group = (
             self._azure_runbook.virtual_network_resource_group
         )
-        arm_parameters.subnet_prefix = self._azure_runbook.subnet_prefix
-        arm_parameters.virtual_network_name = self._azure_runbook.virtual_network_name
+        arm_parameters.subnet_prefix = (
+            self._azure_runbook.subnet_prefix or AZURE_SUBNET_PREFIX
+        )
+        arm_parameters.virtual_network_name = (
+            self._azure_runbook.virtual_network_name or AZURE_VIRTUAL_NETWORK_NAME
+        )
         arm_parameters.use_ipv6 = self._azure_runbook.use_ipv6
 
         is_windows: bool = False
@@ -1247,6 +1312,15 @@ class AzurePlatform(Platform):
         arm_parameters.shared_resource_group_name = (
             self._azure_runbook.shared_resource_group_name
         )
+        arm_parameters.enable_vm_nat = self._azure_runbook.enable_vm_nat
+        arm_parameters.create_public_address = self._azure_runbook.create_public_address
+        if arm_parameters.create_public_address is False:
+            log.debug(
+                "create_public_address is set to False, "
+                "the use_public_address must be set to False."
+            )
+            self._azure_runbook.use_public_address = False
+        arm_parameters.source_address_prefixes = self._get_ip_addresses()
 
         # the arm template may be updated by the hooks, so make a copy to avoid
         # the original template is modified.
@@ -1525,18 +1599,18 @@ class AzurePlatform(Platform):
                     **deployment_parameters
                 )
             wait_operation(validate_operation, failure_identity="validation")
-        except Exception as identifier:
-            error_messages: List[str] = [str(identifier)]
+        except Exception as e:
+            error_messages: List[str] = [str(e)]
 
             # retry when encounter azure.core.exceptions.ResourceNotFoundError:
             # (ResourceGroupNotFound) Resource group 'lisa-xxxx' could not be found.
-            if isinstance(identifier, ResourceNotFoundError) and identifier.error:
-                raise identifier
+            if isinstance(e, ResourceNotFoundError) and e.error:
+                raise e
 
-            if isinstance(identifier, HttpResponseError) and identifier.error:
+            if isinstance(e, HttpResponseError) and e.error:
                 # no validate_operation returned, the message may include
                 # some errors, so check details
-                error_messages = self._parse_detail_errors(identifier.error)
+                error_messages = self._parse_detail_errors(e.error)
 
             error_message = "\n".join(error_messages)
             plugin_manager.hook.azure_deploy_failed(error_message=error_message)
@@ -1568,25 +1642,37 @@ class AzurePlatform(Platform):
             deployment_operation = deployments.begin_create_or_update(
                 **deployment_parameters
             )
-            while True:
+            timer = create_timer()
+            while timer.elapsed(False) < self._azure_runbook.provisioning_timeout:
                 try:
                     wait_operation(
                         deployment_operation, time_out=300, failure_identity="deploy"
                     )
                 except LisaTimeoutException:
+                    # Capture logs and continue retrying
                     self._save_console_log_and_check_panic(
                         resource_group_name, environment, log, False
                     )
                     continue
                 break
-        except HttpResponseError as identifier:
+            # Check if we exited the loop due to timeout
+            if timer.elapsed(False) >= self._azure_runbook.provisioning_timeout:
+                self._save_console_log_and_check_panic(
+                    resource_group_name, environment, log, False
+                )
+                raise LisaException(
+                    f"Deployment timeout: Azure did not respond in "
+                    f"{self._azure_runbook.provisioning_timeout // 60} minutes "
+                    f"(usual response is 50 minutes)."
+                )
+        except HttpResponseError as e:
             # Some errors happens underlying, so there is no detail errors from API.
             # For example,
             # azure.core.exceptions.HttpResponseError:
             #    Operation returned an invalid status 'OK'
-            assert identifier.error, f"HttpResponseError: {identifier}"
+            assert e.error, f"HttpResponseError: {e}"
 
-            error_message = "\n".join(self._parse_detail_errors(identifier.error))
+            error_message = "\n".join(self._parse_detail_errors(e.error))
             if (
                 self._azure_runbook.ignore_provisioning_error
                 and "OSProvisioningTimedOut: OS Provisioning for VM" in error_message
@@ -1699,7 +1785,7 @@ class AzurePlatform(Platform):
                 vm = vms_map[vm_name]
             node.name = vm_name
             public_address, private_address = get_primary_ip_addresses(
-                self, resource_group_name, vm, use_ipv6=self._azure_runbook.use_ipv6
+                self, resource_group_name, vm
             )
             node_context.use_public_address = self._azure_runbook.use_public_address
             node_context.use_ipv6 = self._azure_runbook.use_ipv6
@@ -1725,8 +1811,9 @@ class AzurePlatform(Platform):
             ]
         )
 
+    @classmethod
     def _resource_sku_to_capability(  # noqa: C901
-        self, location: str, resource_sku: ResourceSku
+        cls, location: str, resource_sku: ResourceSku, log: Logger
     ) -> schema.NodeSpace:
         # fill in default values, in case no capability meet.
         node_space = schema.NodeSpace(
@@ -1854,7 +1941,7 @@ class AzurePlatform(Platform):
                         schema.DiskControllerType(allowed_type)
                     )
                 except ValueError:
-                    self._log.error(
+                    log.error(
                         f"'{allowed_type}' is not a known Disk Controller Type "
                         f"({[x for x in schema.DiskControllerType]})"
                     )
@@ -1878,7 +1965,7 @@ class AzurePlatform(Platform):
                             DiskPlacementType(allowed_type)
                         )
                     except ValueError:
-                        self._log.error(
+                        log.error(
                             f"'{allowed_type}' is not a known Ephemeral Disk Placement"
                             f" Type "
                             f"({[x for x in DiskPlacementType]})"
@@ -1983,7 +2070,7 @@ class AzurePlatform(Platform):
         else:
             node_space.disk.has_resource_disk = False
 
-        for supported_feature in self.supported_features():
+        for supported_feature in cls.supported_features():
             if supported_feature.name() in [
                 features.Disk.name(),
                 features.NetworkInterface.name(),
@@ -2093,8 +2180,8 @@ class AzurePlatform(Platform):
                     offer_id=marketplace.offer,
                     plan_id=plan_name,
                 )
-        except Exception as identifier:
-            raise LisaException(f"error on getting marketplace agreement: {identifier}")
+        except Exception as e:
+            raise LisaException(f"error on getting marketplace agreement: {e}")
 
         assert term
         if term.accepted is False:
@@ -2893,9 +2980,11 @@ class AzurePlatform(Platform):
 
         allowed_types = azure_runbook.image.disk_controller_type
         if node_space.disk.disk_controller_type:
+            # Note: azure_runbook.image.disk_controller_type may be None
+            # so it must be passed in as requirement, not capability
             allowed_types = search_space.intersect_setspace_by_priority(
-                node_space.disk.disk_controller_type,  # type: ignore
                 azure_runbook.image.disk_controller_type,  # type: ignore
+                node_space.disk.disk_controller_type,  # type: ignore
                 [],
             )
         node_space.disk.disk_controller_type = allowed_types
@@ -2946,6 +3035,23 @@ class AzurePlatform(Platform):
         self._add_image_features(node_space)
         self._check_image_capability(node_space)
 
+    def _is_byoip_feature_registered(self) -> bool:
+        if self._cached_byoip_registered is not None:
+            return self._cached_byoip_registered
+        try:
+            feature_client = FeatureClient(self.credential, self.subscription_id)
+            resource_provider = "Microsoft.Network"
+            feature_name = "AllowBringYourOwnPublicIpAddress"
+            feature = feature_client.features.get(resource_provider, feature_name)
+            state = feature.properties.state.lower()
+            self._cached_byoip_registered = state == "registered"
+            self._log.debug(f"Got BYOIP feature state: {state}")
+            assert isinstance(self._cached_byoip_registered, bool)
+        except Exception as e:
+            self._log.debug(f"Failed to check BYOIP feature: {e}")
+            self._cached_byoip_registered = False
+        return self._cached_byoip_registered
+
 
 def _get_allowed_locations(nodes_requirement: List[schema.NodeSpace]) -> List[str]:
     existing_locations_str: str = ""
@@ -2984,7 +3090,7 @@ def _get_vhd_generation(image_info: VirtualMachineImage) -> int:
 
 
 def _get_gallery_image_generation(
-    image: Union[GalleryImage, CommunityGalleryImage]
+    image: Union[GalleryImage, CommunityGalleryImage],
 ) -> int:
     assert (
         hasattr(image, "hyper_v_generation") and image.hyper_v_generation

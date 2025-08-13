@@ -24,7 +24,11 @@ class Sed(Tool):
         match_lines: str = "",
         sudo: bool = False,
     ) -> None:
-        # always force run, make sure it happens every time.
+        # Escape slashes (must be done before crafting sed expression,
+        # as we want to preserve slashes after)
+        regexp = regexp.replace("/", r"\/")
+        replacement = replacement.replace("/", r"\/")
+
         if match_lines != "":
             expression = f"/{match_lines}/s/{regexp}/{replacement}/g"
         else:
@@ -68,6 +72,21 @@ class Sed(Tool):
 
     def delete_lines(self, pattern: str, file: PurePath, sudo: bool = False) -> None:
         expression = f"/{pattern}/d"
+        cmd = f'-i.bak "{expression}" {file}'
+        result = self.run(
+            cmd,
+            force_run=True,
+            no_error_log=True,
+            no_info_log=True,
+            sudo=sudo,
+            shell=True,
+        )
+        result.assert_exit_code(message=result.stdout)
+
+    def delete_line_substring(
+        self, match_line: str, regex_to_delete: str, file: PurePath, sudo: bool = False
+    ) -> None:
+        expression = f"/{match_line}/s/{regex_to_delete}//g"
         cmd = f'-i.bak "{expression}" {file}'
         result = self.run(
             cmd,

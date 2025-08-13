@@ -52,6 +52,15 @@ param ip_service_tags object
 @description('whether to use ipv6')
 param use_ipv6 bool = false
 
+@description('whether to enable network outbound access')
+param enable_vm_nat bool
+
+@description('The source IP address prefixes allowed in NSG')
+param source_address_prefixes array
+
+@description('Generate public IP address for each node')
+param create_public_address bool
+
 var vnet_id = virtual_network_name_resource.id
 var node_count = length(nodes)
 var availability_set_name_value = 'lisa-availabilitySet'
@@ -224,6 +233,7 @@ module nodes_nics './nested_nodes_nics.bicep' = [for i in range(0, node_count): 
     enable_sriov: nodes[i].enable_sriov
     tags: tags
     use_ipv6: use_ipv6
+    create_public_address: create_public_address
   }
   dependsOn: [
     nodes_public_ip[i]
@@ -249,8 +259,65 @@ resource virtual_network_name_resource 'Microsoft.Network/virtualNetworks@2024-0
           ['10.0.${j}.0/24'],
           use_ipv6 ? ['2001:db8:${j}::/64'] : []
         )
+        defaultOutboundAccess: enable_vm_nat
+        networkSecurityGroup: {
+          id: resourceId('Microsoft.Network/networkSecurityGroups', '${toLower(virtual_network_name)}-nsg')
+        }
       }
     }]
+  }
+  dependsOn: [
+    nsg
+  ]
+}
+
+resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
+  name: '${toLower(virtual_network_name)}-nsg'
+  location: location
+  properties: {
+    securityRules: [
+      {
+        name: 'LISASSH'
+        properties: {
+          priority: 100
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          destinationPortRange: '22'
+          sourceAddressPrefixes: source_address_prefixes
+          destinationAddressPrefix: '*'
+        }
+      }
+      {
+          name: 'LISAKVMSSH'
+          properties: {
+              description: 'Allows nested VM SSH traffic'
+              protocol: 'Tcp'
+              sourcePortRange: '*'
+              destinationPortRange: '60020-60030'
+              destinationAddressPrefix: '*'
+              sourceAddressPrefixes: source_address_prefixes
+              access: 'Allow'
+              priority: 206
+              direction: 'Inbound'
+          }
+      }
+      {
+        name: 'LISALIBVIRTSSH'
+        properties: {
+            description: 'Allows SSH traffic to Libvirt Platform Guests'
+            protocol: 'Tcp'
+            sourcePortRange: '*'
+            destinationPortRange: '49152-49352'
+            destinationAddressPrefix: '*'
+            sourceAddressPrefixes: source_address_prefixes
+            access: 'Allow'
+            priority: 208
+            direction: 'Inbound'
+        }
+      }
+    ]
   }
 }
 
@@ -264,21 +331,21 @@ resource availability_set 'Microsoft.Compute/availabilitySets@2019-07-01' = if (
   properties: availability_set_properties
 }
 
-resource nodes_public_ip 'Microsoft.Network/publicIPAddresses@2020-05-01' = [for i in range(0, node_count): {
+resource nodes_public_ip 'Microsoft.Network/publicIPAddresses@2020-05-01' = [for i in range(0, node_count): if (create_public_address) {
   location: location
   tags: tags
   name: '${nodes[i].name}-public-ip'
   properties: {
-    publicIPAllocationMethod: ((is_ultradisk || use_availability_zones) ? 'Static' : 'Dynamic')
+    publicIPAllocationMethod: 'Static'
     ipTags: (empty(ip_tags) ? null : ip_tags)
   }
   sku: {
-    name: ((is_ultradisk || use_availability_zones) ? 'Standard' : 'Basic')
+    name: 'Standard'
   }
   zones: (use_availability_zones ? availability_zones : null)
 }]
 
-resource nodes_public_ip_ipv6 'Microsoft.Network/publicIPAddresses@2020-05-01' = [for i in range(0, node_count): if (use_ipv6) {
+resource nodes_public_ip_ipv6 'Microsoft.Network/publicIPAddresses@2020-05-01' = [for i in range(0, node_count): if (use_ipv6 && create_public_address) {
   name: '${nodes[i].name}-public-ipv6'
   location: location
   tags: tags

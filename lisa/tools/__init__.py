@@ -25,6 +25,7 @@ from .chmod import Chmod
 from .chown import Chown
 from .chrony import Chrony
 from .cp import Cp
+from .createrepo import CreateRepo
 from .curl import Curl
 from .date import Date
 from .df import Df
@@ -40,11 +41,13 @@ from .fallocate import Fallocate
 from .fdisk import Fdisk
 from .find import Find
 from .fio import FIOMODES, Fio, FIOResult, IoEngine
+from .fips import Fips
 from .firewall import Firewall, Iptables
 from .free import Free
 from .gcc import Gcc
 from .gdb import Gdb
 from .git import Git
+from .grub_config import GrubConfig
 from .hibernation_setup import HibernationSetup
 from .hostname import Hostname
 from .hugepages import Hugepages
@@ -54,7 +57,7 @@ from .interrupt_inspector import InterruptInspector
 from .ip import Ip, IpInfo
 from .iperf3 import Iperf3
 from .journalctl import Journalctl
-from .kdump import KdumpBase
+from .kdump import KdumpBase, KdumpCheck
 from .kernel_config import KernelConfig
 from .kill import Kill
 from .lagscope import Lagscope
@@ -88,6 +91,7 @@ from .ntpstat import Ntpstat
 from .ntttcp import Ntttcp
 from .nvidiasmi import NvidiaSmi
 from .nvmecli import Nvmecli
+from .openssl import OpenSSL
 from .parted import Parted
 from .perf import Perf
 from .pgrep import Pgrep, ProcessInfo
@@ -100,6 +104,7 @@ from .qemu import Qemu
 from .qemu_img import QemuImg
 from .reboot import Reboot
 from .remote_copy import RemoteCopy
+from .resize_partition import ResizePartition
 from .rm import Rm
 from .sar import Sar
 from .sockperf import Sockperf
@@ -143,6 +148,7 @@ __all__ = [
     "Chown",
     "Chrony",
     "Cp",
+    "CreateRepo",
     "Curl",
     "Date",
     "Df",
@@ -161,11 +167,13 @@ __all__ = [
     "FIOMODES",
     "Fio",
     "FIOResult",
+    "Fips",
     "Firewall",
     "Free",
     "Gcc",
     "Gdb",
     "Git",
+    "GrubConfig",
     "Ip",
     "IpInfo",
     "Iperf3",
@@ -180,6 +188,7 @@ __all__ = [
     "Iperf3",
     "Iptables",
     "Journalctl",
+    "KdumpCheck",
     "KdumpBase",
     "KernelConfig",
     "Kill",
@@ -217,6 +226,7 @@ __all__ = [
     "Ntttcp",
     "NvidiaSmi",
     "Nvmecli",
+    "OpenSSL",
     "Parted",
     "Perf",
     "Pidof",
@@ -231,6 +241,7 @@ __all__ = [
     "QemuImg",
     "Reboot",
     "RemoteCopy",
+    "ResizePartition",
     "Rpm",
     "Rm",
     "Sar",

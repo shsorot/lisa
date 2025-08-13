@@ -132,24 +132,39 @@ class Node(subclasses.BaseClassWithRunbookMixin, ContextMixin, InitializableMixi
     @property
     def support_sudo(self) -> bool:
         self.initialize()
+        # self._support_sudo already set, return it directly.
+        if self._support_sudo is not None:
+            return self._support_sudo
 
-        # check if sudo supported
-        if self._support_sudo is None:
-            if self.is_posix:
-                process = self._execute("command -v sudo", shell=True, no_info_log=True)
-                result = process.wait_result(10)
-                if result.exit_code == 0:
-                    self._support_sudo = True
-                else:
-                    self._support_sudo = False
-                    self.log.debug(
-                        "node doesn't support sudo, may cause failure later."
-                    )
-            else:
-                # set Windows to true to ignore sudo asks.
-                self._support_sudo = True
+        if self.is_posix:
+            self._support_sudo = self._check_sudo_available()
+        else:
+            # set Windows to true to ignore sudo asks.
+            self._support_sudo = True
 
         return self._support_sudo
+
+    def _check_sudo_available(self) -> bool:
+        # Check if 'sudo' command exists
+        process = self._execute("command -v sudo", shell=True, no_info_log=True)
+        result = process.wait_result(10)
+        if result.exit_code != 0:
+            self.log.debug("node doesn't support 'sudo', may cause failure later.")
+            return False
+
+        # Further test: try running 'ls' with sudo /bin/sh
+        process = self._execute("ls", shell=True, sudo=True, no_info_log=True)
+        result = process.wait_result(10)
+        if result.exit_code != 0:
+            # e.g. raw error: "user is not allowed to execute '/bin/sh -c ...'"
+            if "not allowed" in result.stderr:
+                self.log.debug(
+                    "The command 'sudo /bin/sh -c ls' may fail due to SELinux policies"
+                    " that restrict the use of sudo in combination with /bin/sh."
+                )
+                return False
+
+        return True
 
     @property
     def parent(self) -> Optional[Node]:
@@ -353,11 +368,11 @@ class Node(subclasses.BaseClassWithRunbookMixin, ContextMixin, InitializableMixi
         self.log.debug(f"capturing system information to {saved_path}.")
         try:
             self.os.capture_system_information(saved_path)
-        except Exception as identifier:
+        except Exception as e:
             # For some images like cisco, southrivertech1586314123192, they might raise
             # exception when calling copy_back. This should not block the test, so add
             # try-except.
-            self.log.debug(f"error on capturing system information: {identifier}")
+            self.log.debug(f"error on capturing system information: {e}")
 
     def find_partition_with_freespace(
         self, size_in_gb: int, use_os_drive: bool = True, raise_error: bool = True
@@ -478,8 +493,8 @@ class Node(subclasses.BaseClassWithRunbookMixin, ContextMixin, InitializableMixi
         try:
             self.execute("echo connected", timeout=10)
             return True
-        except Exception as identifier:
-            self.log.debug(f"cannot access VM {self.name}, error is {identifier}")
+        except Exception as e:
+            self.log.debug(f"cannot access VM {self.name}, error is {e}")
         return False
 
     def check_kernel_panic(self) -> None:
@@ -784,8 +799,8 @@ class RemoteNode(Node):
             password = generate_strong_password()
         try:
             password_extension.reset_password(username, str(password))
-        except Exception as identifier:
-            self.log.debug(f"reset password failed: {identifier}")
+        except Exception as e:
+            self.log.debug(f"reset password failed: {e}")
             return False
         add_secret(password)
         self._connection_info.password = password
@@ -1209,10 +1224,8 @@ class NodeHookImpl:
                     information.update(information_dict)
                     information["distro_version"] = node.os.information.full_version
                     information["kernel_version"] = linux_information.kernel_version_raw
-            except Exception as identifier:
-                node.log.exception(
-                    "failed to get node information", exc_info=identifier
-                )
+            except Exception as e:
+                node.log.exception("failed to get node information", exc_info=e)
 
         return information
 

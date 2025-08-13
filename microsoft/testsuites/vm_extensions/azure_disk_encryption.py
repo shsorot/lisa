@@ -11,6 +11,7 @@ from azure.mgmt.keyvault.models import Sku as KeyVaultSku
 from azure.mgmt.keyvault.models import VaultProperties
 
 from lisa import Logger, Node, TestCaseMetadata, TestSuite, TestSuiteMetadata
+from lisa.features.security_profile import CvmDisabled
 from lisa.operating_system import CBLMariner, CentOs, Oracle, Redhat, Ubuntu
 from lisa.sut_orchestrator import AZURE
 from lisa.sut_orchestrator.azure.common import (
@@ -40,11 +41,6 @@ UnsupportedVersionInfo = List[Dict[str, int]]
     area="vm_extension",
     category="functional",
     description="Tests for the Azure Disk Encryption (ADE) extension",
-    requirement=simple_requirement(
-        min_memory_mb=MIN_REQUIRED_MEMORY_MB,
-        supported_features=[AzureExtension],
-        supported_platform_type=[AZURE],
-    ),
 )
 class AzureDiskEncryption(TestSuite):
     def before_case(self, log: Logger, **kwargs: Any) -> None:
@@ -73,7 +69,7 @@ class AzureDiskEncryption(TestSuite):
         timeout=TIME_LIMIT,
         requirement=simple_requirement(
             min_memory_mb=MIN_REQUIRED_MEMORY_MB,
-            supported_features=[AzureExtension],
+            supported_features=[AzureExtension, CvmDisabled()],
             supported_platform_type=[AZURE],
             min_core_count=4,
         ),
@@ -136,6 +132,11 @@ class AzureDiskEncryption(TestSuite):
         provisioned successfully on the remote machine.
         """,
         priority=1,
+        requirement=simple_requirement(
+            min_memory_mb=MIN_REQUIRED_MEMORY_MB,
+            supported_features=[AzureExtension, CvmDisabled()],
+            supported_platform_type=[AZURE],
+        ),
     )
     def verify_azure_disk_encryption_provisioned(
         self, log: Logger, node: Node, result: TestResult

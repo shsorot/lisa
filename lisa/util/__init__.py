@@ -1,5 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
+import ipaddress
 import random
 import re
 import string
@@ -28,9 +29,11 @@ from typing import (
 
 import paramiko
 import pluggy
+import requests
 from assertpy import assert_that
 from dataclasses_json import config
 from marshmallow import fields
+from retry import retry
 from semver import VersionInfo
 
 from lisa import secret
@@ -392,9 +395,9 @@ class InitializableMixin:
             try:
                 self._is_initialized = True
                 self._initialize(*args, **kwargs)
-            except Exception as identifier:
+            except Exception as e:
                 self._is_initialized = False
-                raise identifier
+                raise e
 
 
 class BaseClassMixin:
@@ -908,3 +911,50 @@ def check_panic(content: str, stage: str, log: "Logger") -> None:
 
     if panics:
         raise KernelPanicException(stage, panics)
+
+
+def to_bool(value: Union[str, bool, int]) -> bool:
+    """
+    Convert a string to a boolean value.
+    Returns sensible "True/False" values for strings, bools and ints, failing
+    otherwise.
+    Allows for casing and leading/trailing whitespace.
+    """
+    str_to_bool_map = {
+        "true": True,
+        "false": False,
+        "yes": True,
+        "no": False,
+        "1": True,
+        "0": False,
+    }
+
+    # Handle boolean values directly
+    if isinstance(value, bool):
+        return value
+
+    # Handle integer values directly
+    if isinstance(value, int):
+        return bool(value)
+
+    # If the value is a string, convert it to lowercase and strip whitespace
+    # and look it up in the dictionary.
+    if isinstance(value, str):
+        value = value.lower().strip()
+        bool_value = str_to_bool_map.get(value)
+        if bool_value is None:
+            raise ValueError(f"Invalid boolean string: {value}")
+        return bool_value
+
+    # If the value is not a string, boolean, or integer, raise an error.
+    raise TypeError(
+        f"Unsupported type for conversion to boolean: {type(value).__name__}"
+    )
+
+
+@retry(tries=10, delay=0.5)
+def get_public_ip() -> str:
+    response = requests.get("https://api.ipify.org/", timeout=5)
+    result = response.text
+    ipaddress.ip_address(result)
+    return str(result)

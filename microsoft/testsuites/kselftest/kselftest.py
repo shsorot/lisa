@@ -2,7 +2,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import PurePath, PurePosixPath
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from assertpy import assert_that
 
@@ -12,7 +12,7 @@ from lisa.messages import TestStatus, send_sub_test_result_message
 from lisa.node import Node
 from lisa.operating_system import CBLMariner, Ubuntu
 from lisa.testsuite import TestResult
-from lisa.tools import Cp, Git, Ls, Make, RemoteCopy, Tar
+from lisa.tools import Cp, Df, Git, Ls, Make, RemoteCopy, Tar
 from lisa.tools.chmod import Chmod
 from lisa.tools.mkdir import Mkdir
 from lisa.tools.whoami import Whoami
@@ -87,7 +87,7 @@ class Kselftest(Tool):
         return True
 
     def _check_exists(self) -> bool:
-        return len(self.node.tools[Ls].list(str(self._installed_path), sudo=True)) > 0
+        return len(self.node.tools[Ls].list(str(self._installed_path))) > 0
 
     def __init__(
         self,
@@ -187,7 +187,6 @@ class Kselftest(Tool):
             self.node.tools[Make].run(
                 "headers",
                 cwd=kernel_path,
-                sudo=True,
                 expected_exit_code=0,
                 expected_exit_code_failure_message="failed to build kernel headers.",
             ).assert_exit_code()
@@ -197,14 +196,13 @@ class Kselftest(Tool):
                 cmd=f"./kselftest_install.sh {self._installed_path}",
                 shell=True,
                 cwd=PurePosixPath(kernel_path, "tools/testing/selftests"),
-                sudo=True,
                 expected_exit_code=0,
                 expected_exit_code_failure_message="fail to build & install kselftest",
             ).assert_exit_code()
             # change permissions of kselftest-packages directory
             # to run test as non root user.
             chmod = self.node.tools[Chmod]
-            chmod.update_folder(self._installed_path.as_posix(), "777", sudo=True)
+            chmod.update_folder(self._installed_path.as_posix(), "777")
 
         return self._check_exists()
 
@@ -214,9 +212,10 @@ class Kselftest(Tool):
         log_path: str,
         timeout: int = 5000,
         run_test_as_root: bool = False,
+        run_collections: Optional[List[str]] = None,
+        skip_tests: Optional[List[str]] = None,
     ) -> List[KselftestResult]:
-        # Executing kselftest as root may cause
-        # VM to hang
+        # Executing kselftest as root may cause VM to hang
 
         # get username
         username = self.node.tools[Whoami].get_username()
@@ -229,22 +228,89 @@ class Kselftest(Tool):
 
         result_file_name = "kselftest-results.txt"
         result_file = f"{result_directory}/{result_file_name}"
-        self.run(
-            f" 2>&1 | tee {result_file}",
-            sudo=run_test_as_root,
-            force_run=True,
-            shell=True,
-            timeout=timeout,
-        )
+
+        if self._tar_file_path:
+            work_dir = PurePosixPath(self._installed_path)
+        else:
+            work_dir = None
+
+        env_var_dict: Dict[str, str] = {}
+        kself_required_space = 2  # 2 GB required for /tmp/ folder
+        tmp_folder_space = self.node.tools[Df].get_filesystem_available_space("/tmp/")
+        if tmp_folder_space < kself_required_space:
+            new_tmp_path = self.node.find_partition_with_freespace(kself_required_space)
+            env_var_dict["TMPDIR"] = new_tmp_path
+            self._log.debug(f"Kselftest set TMPDIR to {new_tmp_path}!")
+
+        if run_collections or skip_tests:
+            # List all available tests
+            list_result = self.run(" -l", shell=True)
+            list_result.assert_exit_code(
+                message="failed to retrieve the list of available kself tests"
+            )
+            all_tests = list_result.stdout.splitlines()
+
+            # Filter tests based on run_collections if it exists
+            # Example: if run_collections = ['uevent']
+            # all_tests will already have all tests in the format:
+            #   ['core:close_range_test', 'core:unshare_test',
+            #    'tty:tty_tstamp_update', 'uevent:uevent_filtering']
+            # The filtered_tests will then have the value:
+            #   ['uevent:uevent_filtering']
+            # This means all the tests that belong to the 'uevent'
+            #   collection are selected.
+            if run_collections:
+                filtered_tests = [
+                    test
+                    for test in all_tests
+                    if any(
+                        (match := re.match(r"^[^:/]+", test))
+                        and collection == match.group(0)
+                        for collection in run_collections
+                    )
+                ]
+            else:
+                filtered_tests = all_tests
+
+            # Ensure skip_tests is not None
+            skip_tests = skip_tests or []
+            # Exclude tests based on skip_tests
+            tests_to_run = [test for test in filtered_tests if test not in skip_tests]
+
+            if tests_to_run:
+                tests_to_run_str = " ".join(f"-t {test}" for test in tests_to_run)
+                self._log.debug(f"Running tests: {tests_to_run}")
+                self.run(
+                    f" {tests_to_run_str} 2>&1 | tee -a {result_file}",
+                    cwd=work_dir,
+                    sudo=run_test_as_root,
+                    force_run=True,
+                    shell=True,
+                    timeout=timeout,
+                    update_envs=env_var_dict,
+                )
+        else:
+            # run all tests
+            self.run(
+                f" 2>&1 | tee {result_file}",
+                cwd=work_dir,
+                sudo=run_test_as_root,
+                force_run=True,
+                shell=True,
+                timeout=timeout,
+                update_envs=env_var_dict,
+            )
 
         # Allow read permissions for "others" to remote copy the file
         # kselftest-results.txt
         chmod = self.node.tools[Chmod]
-        chmod.update_folder(result_file, "644", sudo=True)
+        chmod.update_folder(result_file, "644")
 
         # copy kselftest-results.txt from remote to local node for processing results
         remote_copy = self.node.tools[RemoteCopy]
-        remote_copy.copy_to_local(PurePosixPath(result_file), PurePath(log_path))
+        remote_copy.copy_to_local(
+            PurePosixPath(result_file), PurePath(log_path), False, False
+        )
 
         local_kselftest_results_path = PurePath(log_path) / result_file_name
 

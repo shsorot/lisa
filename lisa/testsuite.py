@@ -94,8 +94,7 @@ class TestResult:
         self._timer: Timer
 
         self._environment_information: Dict[str, Any] = {}
-        # parent_log = get_logger("suite", self.runtime_data.metadata.suite.name)
-        self.log = get_logger("case", self.name)
+        self.log = get_logger(f"case[{self.name}]", self.id_)
 
     @property
     def is_queued(self) -> bool:
@@ -566,6 +565,7 @@ class TestCaseMetadata:
         use_new_environment: bool = False,
         owner: str = "",
         requirement: Optional[TestCaseRequirement] = None,
+        tags: Optional[List[str]] = None,
     ) -> None:
         self.suite: TestSuiteMetadata
 
@@ -575,7 +575,8 @@ class TestCaseMetadata:
         self.use_new_environment = use_new_environment
         if requirement:
             self.requirement = requirement
-
+        if tags:
+            self.tags = tags
         self._owner = owner
 
     def __getattr__(self, key: str) -> Any:
@@ -813,8 +814,8 @@ class TestSuite:
                 timeout=timeout,
                 test_kwargs=test_kwargs,
             )
-        except Exception as identifier:
-            case_result.handle_exception(identifier, log, "before_case")
+        except Exception as e:
+            case_result.handle_exception(e, log, "before_case")
             result = False
 
         log.debug(f"before_case end in {timer}")
@@ -834,9 +835,9 @@ class TestSuite:
                 timeout=timeout,
                 test_kwargs=test_kwargs,
             )
-        except Exception as identifier:
+        except Exception as e:
             # after case doesn't impact test case result.
-            log.error("after_case failed", exc_info=identifier)
+            log.error("after_case failed", exc_info=e)
         log.debug(f"after_case end in {timer}")
 
     def __run_case(
@@ -862,8 +863,8 @@ class TestSuite:
                     if node.assert_kernel_error_after_test:
                         node.check_kernel_error()
             case_result.set_status(TestStatus.PASSED, "")
-        except Exception as identifier:
-            case_result.handle_exception(exception=identifier, log=log)
+        except Exception as e:
+            case_result.handle_exception(exception=e, log=log)
         log.debug(f"case end in {timer}")
 
 
@@ -925,6 +926,10 @@ def _add_case_to_suite(
 ) -> None:
     test_case.suite = test_suite
     test_case.full_name = f"{test_suite.name}.{test_case.name}"
+    # Append tags from test_suite if exists to test_case tags and remove duplicates
+    suite_tags = getattr(test_suite, "tags", []) or []
+    case_tags = getattr(test_case, "tags", []) or []
+    test_case.tags = list(dict.fromkeys(case_tags + suite_tags))
     test_suite.cases.append(test_case)
 
 

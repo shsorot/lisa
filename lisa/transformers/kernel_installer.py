@@ -161,13 +161,18 @@ class KernelInstallerTransformer(DeploymentTransformer):
             # the installed kernel version is lower than current kernel version.
             from lisa.transformers.dom0_kernel_installer import Dom0Installer
             from lisa.transformers.kernel_source_installer import SourceInstaller
+            from lisa.transformers.rpm_kernel_installer import RPMInstaller
 
             if (
-                isinstance(installer, RepoInstaller)
-                and "fde" not in installer.runbook.source
-            ) or (
-                isinstance(installer, SourceInstaller)
-                and not isinstance(installer, Dom0Installer)
+                (
+                    isinstance(installer, RepoInstaller)
+                    and "fde" not in installer.runbook.source
+                )
+                or (
+                    isinstance(installer, SourceInstaller)
+                    and not isinstance(installer, Dom0Installer)
+                )
+                or isinstance(installer, RPMInstaller)
             ):
                 posix = cast(Posix, node.os)
                 posix.replace_boot_kernel(installed_kernel_version)
@@ -275,7 +280,7 @@ class RepoInstaller(BaseInstaller):
         self._log.info(f"Adding repository: {repo_entry}")
         ubuntu.add_repository(repo_entry)
         full_package_name = runbook.source
-        if full_package_name == "linux-azure-fips":
+        if "fips" in full_package_name:
             # Remove default fips repository before kernel installation.
             # The default fips repository is not needed and it causes
             # the kernel installation from proposed repos to fail.
@@ -324,15 +329,10 @@ class PpaInstaller(RepoInstaller):
     def install(self) -> str:
         runbook: PpaInstallerSchema = self.runbook
         node: Node = self._node
-
-        # the key is optional
-        if runbook.openpgp_key:
-            node.execute(
-                f"apt-key adv --keyserver keyserver.ubuntu.com --recv-keys "
-                f"{runbook.openpgp_key}",
-                sudo=True,
-                expected_exit_code=0,
-                expected_exit_code_failure_message="error on import key",
+        if runbook.openpgp_key and isinstance(node.os, Ubuntu):
+            node.os.add_key(
+                server_name="keyserver.ubuntu.com",
+                key=runbook.openpgp_key,
             )
 
         # replace default repo url

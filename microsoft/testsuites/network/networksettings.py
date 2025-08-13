@@ -56,6 +56,11 @@ class NetworkSettings(TestSuite):
     _queue_stats_regex = re.compile(r"[tr]x_queue_(?P<name>[\d]+)_packets")
     _vf_queue_stats_regex = re.compile(r"[tr]x[_]?(?P<name>[\d]+)_packets")
 
+    # regex for filtering vf queue stats on FreeBSD
+    # dev.mce.0.rxstat3.packets: 2901
+    # dev.mce.0.txstat3tc0.packets: 3287
+    _bsd_vf_queue_stats_regex = re.compile(r"[tr]xstat(?P<name>[\d]+)\S*\.packets")
+
     # This will match different tx queues like -
     # {'name': 'tx_queue_0_packets', 'value': '0'}
     # {'name': 'tx_queue_1_packets', 'value': '0'}
@@ -98,8 +103,8 @@ class NetworkSettings(TestSuite):
         ethtool = node.tools[Ethtool]
         try:
             devices_settings = ethtool.get_all_device_ring_buffer_settings()
-        except UnsupportedOperationException as identifier:
-            raise SkippedException(identifier)
+        except UnsupportedOperationException as e:
+            raise SkippedException(e)
 
         for interface_settings in devices_settings:
             interface = interface_settings.device_name
@@ -197,8 +202,8 @@ class NetworkSettings(TestSuite):
         ethtool = node.tools[Ethtool]
         try:
             devices_channels = ethtool.get_all_device_channels_info()
-        except UnsupportedOperationException as identifier:
-            raise SkippedException(identifier)
+        except UnsupportedOperationException as e:
+            raise SkippedException(e)
 
         skip_test = True
         for interface_channels_info in devices_channels:
@@ -383,8 +388,8 @@ class NetworkSettings(TestSuite):
         ethtool = node.tools[Ethtool]
         try:
             devices_rss_hkey_info = ethtool.get_all_device_rss_hash_key()
-        except UnsupportedOperationException as identifier:
-            raise SkippedException(identifier)
+        except UnsupportedOperationException as e:
+            raise SkippedException(e)
 
         for device_hkey_info in devices_rss_hkey_info:
             original_hkey = device_hkey_info.rss_hash_key
@@ -438,8 +443,8 @@ class NetworkSettings(TestSuite):
         for protocol in test_protocols:
             try:
                 devices_rx_hlevel_info = ethtool.get_all_device_rx_hash_level(protocol)
-            except UnsupportedOperationException as identifier:
-                raise SkippedException(identifier)
+            except UnsupportedOperationException as e:
+                raise SkippedException(e)
 
             for device_hlevel_info in devices_rx_hlevel_info:
                 interface = device_hlevel_info.interface
@@ -450,8 +455,8 @@ class NetworkSettings(TestSuite):
                     new_settings = ethtool.change_device_rx_hash_level(
                         interface, protocol, expected_hlevel
                     )
-                except UnsupportedOperationException as identifier:
-                    raise SkippedException(identifier)
+                except UnsupportedOperationException as e:
+                    raise SkippedException(e)
                 assert_that(
                     new_settings.protocol_hash_map[protocol],
                     f"Changing RX hash level for {protocol} didn't succeed",
@@ -749,8 +754,8 @@ class NetworkSettings(TestSuite):
             "netvsc_set_msglevel" not in msg_level_symbols
         ):
             raise SkippedException(
-                f"Get/Set message level not supported on {kernel_version},"
-                " Skipping test."
+                f"Get/Set message level not supported on {kernel_version}, "
+                "Skipping test."
             )
 
     def _verify_stats_exists(
@@ -761,8 +766,8 @@ class NetworkSettings(TestSuite):
         ethtool = client_node.tools[Ethtool]
         try:
             devices_statistics = ethtool.get_all_device_statistics()
-        except UnsupportedOperationException as identifier:
-            raise SkippedException(identifier)
+        except UnsupportedOperationException as e:
+            raise SkippedException(e)
 
         per_queue_stats = 0
         per_vf_queue_stats = 0
@@ -771,13 +776,18 @@ class NetworkSettings(TestSuite):
             if nic.lower:
                 try:
                     device_stats = ethtool.get_device_statistics(nic.lower, True)
-                except UnsupportedOperationException as identifier:
-                    raise SkippedException(identifier)
+                except UnsupportedOperationException as e:
+                    raise SkippedException(e)
 
                 for k in device_stats.counters.keys():
-                    if self._vf_queue_stats_regex.search(k):
-                        # Both tx/rx queues will be counted with the regex.
-                        per_vf_queue_stats += 1
+                    if isinstance(client_node.os, BSD):
+                        if self._bsd_vf_queue_stats_regex.search(k):
+                            # Both tx/rx queues will be counted with the regex.
+                            per_vf_queue_stats += 1
+                    else:
+                        if self._vf_queue_stats_regex.search(k):
+                            # Both tx/rx queues will be counted with the regex.
+                            per_vf_queue_stats += 1
 
                 assert_that(
                     per_vf_queue_stats,

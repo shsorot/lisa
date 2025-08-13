@@ -28,6 +28,8 @@ class Waagent(Tool):
     _python_candidates = [
         "python3",
         "python2",
+        # for some freebsd images, such as microsoftostc freebsd-11
+        "python",
         # for RedHat 8.0
         "/usr/libexec/platform-python",
         # for flatcar
@@ -71,6 +73,8 @@ class Waagent(Tool):
                     " /usr/bin and /usr/sbin."
                 )
             result = self.run("-version")
+        if result.exit_code != 0:
+            result = self.run("-version", sudo=True)
 
         # When the default command python points to python2,
         # we need specify python3 clearly.
@@ -390,9 +394,9 @@ class KvpClient(Tool):
             self.node.os.install_packages("kernel-headers glibc-devel binutils")
         gcc = self.node.tools[Gcc]
         # in C90, the status returned is undefined
-        # use c99 to make sure the return value is correct
+        # use gnu89 to make sure the return value is correct
         gcc.compile(
-            filename=source_file, output_name=self.command, arguments="-std=c99"
+            filename=source_file, output_name=self.command, arguments="-std=gnu89"
         )
 
 

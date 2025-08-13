@@ -38,6 +38,7 @@ from lisa.tools import (
     Ls,
     Mkdir,
     QemuImg,
+    ResizePartition,
     Sed,
     Service,
     Uname,
@@ -214,9 +215,9 @@ class BaseLibvirtPlatform(Platform, IBaseLibvirtPlatform):
                                 current_settings.type,
                                 BaseLibvirtPlatform.supported_features(),
                             )
-                        except NotMeetRequirementException as identifier:
+                        except NotMeetRequirementException as e:
                             raise LisaException(
-                                f"platform doesn't support all features. {identifier}"
+                                f"platform doesn't support all features. {e}"
                             )
                         new_setting = schema.load_by_type(
                             settings_type, current_settings
@@ -398,6 +399,7 @@ class BaseLibvirtPlatform(Platform, IBaseLibvirtPlatform):
         try:
             self._create_nodes(environment, log)
             self._fill_nodes_metadata(environment, log)
+            self._expand_nodes_os_partition(environment, log)
 
         except Exception as ex:
             assert environment.platform
@@ -1395,8 +1397,8 @@ class BaseLibvirtPlatform(Platform, IBaseLibvirtPlatform):
                     value = method()
                     if value:
                         information[key] = value
-                except Exception as identifier:
-                    node.log.exception(f"error on get {key}.", exc_info=identifier)
+                except Exception as e:
+                    node.log.exception(f"error on get {key}.", exc_info=e)
 
         return information
 
@@ -1444,3 +1446,13 @@ class BaseLibvirtPlatform(Platform, IBaseLibvirtPlatform):
             )
             with open(str(libvirt_log_local_path), "w") as f:
                 f.write(libvirt_log)
+
+    def _expand_nodes_os_partition(self, environment: Environment, log: Logger) -> None:
+        for node in environment.nodes.list():
+            # In some cases, we observe that resize vhd resizes the entire disk
+            # but fails to expand the partition size.
+            log.debug(
+                f"Expanding os parition for: node: {node.name}, os: {node.os.name}"
+            )
+            resize = node.tools[ResizePartition]
+            resize.expand_os_partition()
