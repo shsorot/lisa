@@ -16,7 +16,6 @@ from lisa.executable import Tool
 from lisa.operating_system import CBLMariner, Debian, Oracle, Posix, Redhat, Suse
 from lisa.tools import Find, Gcc
 from lisa.tools.df import Df
-from lisa.tools.dmesg import Dmesg
 from lisa.tools.echo import Echo
 from lisa.tools.free import Free
 from lisa.tools.lsblk import Lsblk
@@ -856,16 +855,6 @@ class KdumpCheck(Tool):
         kdump = self.node.tools[KdumpBase]
         kdump.check_required_kernel_config()
 
-        # Check the VMBus version for kdump supported
-        dmesg = self.node.tools[Dmesg]
-        vmbus_version = dmesg.get_vmbus_version()
-        if vmbus_version < "3.0.0":
-            raise SkippedException(
-                f"No negotiated VMBus version {vmbus_version}. "
-                "Kernel might be old or patches not included. "
-                "Full support for kdump is not present."
-            )
-
         # Below code aims to check the kernel config for "auto crashkernel" supported.
         # Redhat/Centos has this "auto crashkernel" feature. For version 7, it needs the
         # CONFIG_KEXEC_AUTO_RESERVE. For version 8, the ifdefine of that config is
@@ -888,8 +877,18 @@ class KdumpCheck(Tool):
     def _get_resource_disk_dump_path(self) -> str:
         from lisa.features import Disk
 
-        mount_point = self.node.features[Disk].get_resource_disk_mount_point()
-        dump_path = mount_point + "/crash"
+        # Try to access Disk feature (available on Azure platform)
+        try:
+            mount_point = self.node.features[Disk].get_resource_disk_mount_point()
+            dump_path = mount_point + "/crash"
+        except LisaException as e:
+            # Fallback for platforms without resource disk (baremetal, MSHV, etc.)
+            # Use /var/crash as it's the standard kdump path.
+            dump_path = "/var/crash"
+            self._log.debug(
+                f"Resource disk not available on this platform. "
+                f"Using fallback dump path: {dump_path}. Exception: {e}"
+            )
         return dump_path
 
     def _is_system_with_more_memory(self) -> bool:

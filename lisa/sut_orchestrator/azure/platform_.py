@@ -340,6 +340,8 @@ class AzurePlatformSchema:
     wait_delete: bool = False
     # the AzCopy path can be specified if use this tool to copy blob
     azcopy_path: str = field(default="")
+    # timeout for deployment operations in seconds (default: 60 minutes)
+    provisioning_timeout: int = field(default=3600)
 
     def __post_init__(self, *args: Any, **kwargs: Any) -> None:
         strip_strs(
@@ -1044,7 +1046,7 @@ class AzurePlatform(Platform):
 
                 cached_credential = get_static_access_token(
                     azure_runbook.azure_arm_access_token
-                ) or DefaultAzureCredential(
+                ) or DefaultAzureCredential(  # CodeQL [SM05139] Okay use of DefaultAzureCredential as it is only used in development # noqa E501
                     authority=self.cloud.endpoints.active_directory,
                 )
 
@@ -1640,17 +1642,29 @@ class AzurePlatform(Platform):
             deployment_operation = deployments.begin_create_or_update(
                 **deployment_parameters
             )
-            while True:
+            timer = create_timer()
+            while timer.elapsed(False) < self._azure_runbook.provisioning_timeout:
                 try:
                     wait_operation(
                         deployment_operation, time_out=300, failure_identity="deploy"
                     )
                 except LisaTimeoutException:
+                    # Capture logs and continue retrying
                     self._save_console_log_and_check_panic(
                         resource_group_name, environment, log, False
                     )
                     continue
                 break
+            # Check if we exited the loop due to timeout
+            if timer.elapsed(False) >= self._azure_runbook.provisioning_timeout:
+                self._save_console_log_and_check_panic(
+                    resource_group_name, environment, log, False
+                )
+                raise LisaException(
+                    f"Deployment timeout: Azure did not respond in "
+                    f"{self._azure_runbook.provisioning_timeout // 60} minutes "
+                    f"(usual response is 50 minutes)."
+                )
         except HttpResponseError as e:
             # Some errors happens underlying, so there is no detail errors from API.
             # For example,
@@ -2966,9 +2980,11 @@ class AzurePlatform(Platform):
 
         allowed_types = azure_runbook.image.disk_controller_type
         if node_space.disk.disk_controller_type:
+            # Note: azure_runbook.image.disk_controller_type may be None
+            # so it must be passed in as requirement, not capability
             allowed_types = search_space.intersect_setspace_by_priority(
-                node_space.disk.disk_controller_type,  # type: ignore
                 azure_runbook.image.disk_controller_type,  # type: ignore
+                node_space.disk.disk_controller_type,  # type: ignore
                 [],
             )
         node_space.disk.disk_controller_type = allowed_types

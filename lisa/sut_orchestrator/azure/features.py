@@ -1098,7 +1098,7 @@ class NetworkInterface(AzureFeatureMixin, features.NetworkInterface):
 
     def reload_module(self) -> None:
         modprobe_tool = self._node.tools[Modprobe]
-        modprobe_tool.reload(["hv_netvsc"])
+        modprobe_tool.reload("hv_netvsc")
 
     # Subroutine for applying route table to subnet.
     # We don't want to retry the entire routine if we
@@ -2603,7 +2603,9 @@ class SecurityProfile(AzureFeatureMixin, features.SecurityProfile):
         cls, image: schema.ImageSchema
     ) -> Optional[schema.FeatureSettings]:
         assert isinstance(image, AzureImageSchema), f"actual: {type(image)}"
-        return SecurityProfileSettings(security_profile=image.security_profile)
+        if image.security_profile:
+            return SecurityProfileSettings(security_profile=image.security_profile)
+        return None
 
     @classmethod
     def on_before_deployment(cls, *args: Any, **kwargs: Any) -> None:
@@ -3481,7 +3483,9 @@ class Architecture(AzureFeatureMixin, Feature):
         cls, image: schema.ImageSchema
     ) -> Optional[schema.FeatureSettings]:
         assert isinstance(image, AzureImageSchema), f"actual: {type(image)}"
-        return ArchitectureSettings(arch=image.architecture)
+        if image.architecture:
+            return ArchitectureSettings(arch=image.architecture)
+        return None
 
     @classmethod
     def settings_type(cls) -> Type[schema.FeatureSettings]:

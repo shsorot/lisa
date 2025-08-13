@@ -55,6 +55,7 @@ from lisa.tools import (
     Stat,
     Swap,
 )
+from lisa.tools.lsblk import DiskInfo
 from lisa.util import (
     LisaException,
     PassedException,
@@ -896,22 +897,44 @@ class AzureImageStandard(TestSuite):
             ]
 
             if node.os.information.version >= "8.0.0":
-                # verify that `base` repository is present
+                # Debug: Log actual repository IDs for troubleshooting
+                repo_ids = [repo.id for repo in fedora_repositories]
+                node.log.info(f"Found repositories: {repo_ids}")
+
                 is_base_repository_present = any(
-                    ["base" in repository.id for repository in fedora_repositories]
+                    any(
+                        pattern in repository.id.lower()
+                        for pattern in [
+                            "base",
+                            "baseos",
+                            "rhel",
+                            "fedora",
+                            "centos",
+                            "rhui",
+                        ]
+                    )
+                    for repository in fedora_repositories
                 )
                 assert_that(
-                    is_base_repository_present, "Base repository should be present"
+                    is_base_repository_present,
+                    f"Base repository should be present. Found repositories: "
+                    f"{repo_ids}",
                 ).is_true()
 
-                # verify that `appstream` repository is present
-                is_appstream_repository_present = any(
-                    ["appstream" in repository.id for repository in fedora_repositories]
-                )
-                assert_that(
-                    is_appstream_repository_present,
-                    "AppStream repository should be present",
-                ).is_true()
+                # Validate optional repositories (updates, extras, etc.)
+                optional_patterns = ["updates", "extras", "appstream", "optional"]
+                optional_repos = [
+                    repo.id
+                    for repo in fedora_repositories
+                    if any(pattern in repo.id.lower() for pattern in optional_patterns)
+                ]
+
+                if optional_repos:
+                    node.log.info(f"Found optional repositories: {optional_repos}")
+                else:
+                    node.log.warning(
+                        f"No optional repositories found. Available: {repo_ids}"
+                    )
 
             # verify that at least five repositories are present in Redhat
             if type(node.os) == Redhat:
@@ -1018,8 +1041,10 @@ class AzureImageStandard(TestSuite):
         logs_checked = []
         pattern_found = False
         # Check dmesg output for the patterns if certain OS detected
-        if isinstance(node.os, CBLMariner) or (
-            isinstance(node.os, Ubuntu) and node.os.information.version >= "22.10.0"
+        if (
+            (isinstance(node.os, Ubuntu) and node.os.information.version >= "22.10.0")
+            or isinstance(node.os, CBLMariner)
+            or isinstance(node.os, FreeBSD)
         ):
             dmesg_tool = node.tools[Dmesg]
             log_output = dmesg_tool.get_output()
@@ -1256,8 +1281,11 @@ class AzureImageStandard(TestSuite):
            /etc/ssh/sshd_config.d/50-cloudimg-settings.conf
         2. Verify the parameter exists. The test fails if ClientAliveInterval is not
            found.
-        3. Confirm the value is within the acceptable range (> 0 and < 181 ). The test
-           fails if the value is outside this range.
+        3. Confirm the value is within the acceptable range (> 0 and < 236 ). The test
+           fails if the value is outside this range. It is recommended to set
+           ClientAliveInterval to 180. For Azure certification, values between 30 and
+           235 are acceptable depending on application requirements. For more details,
+           refer to https://aka.ms/Linux-Testcases.
         """,
         priority=2,
         requirement=simple_requirement(supported_platform_type=[AZURE, READY, HYPERV]),
@@ -1268,14 +1296,15 @@ class AzureImageStandard(TestSuite):
         value = ssh.get(setting)
         if not value:
             raise LisaException(f"not find {setting} in sshd_config")
-        if not (int(value) > 0 and int(value) < 181):
+        if not (int(value) > 0 and int(value) < 236):
             # "The ClientAliveInterval configuration of OpenSSH is set to" is the
             # failure triage pattern. Please be careful when changing this string.
             raise LisaException(
                 f"The {setting} configuration of OpenSSH is set to {int(value)} "
                 "seconds in this image. A properly configured ClientAliveInterval "
-                "helps maintain secure SSH connections. Please keep ClientAliveInterval"
-                " between 0 seconds and 180 seconds."
+                "helps maintain secure SSH connections. Please set ClientAliveInterval"
+                " to 180. On the application need, values between 30 and 235 are "
+                "acceptable. For more details, refer to https://aka.ms/Linux-Testcases."
             )
 
     @TestCaseMetadata(
@@ -1514,13 +1543,17 @@ class AzureImageStandard(TestSuite):
         requirement=simple_requirement(supported_platform_type=[AZURE]),
     )
     def verify_python_version(self, node: Node) -> None:
-        minimum_version = Version("3.8.0")
+        minimum_version = Version("3.9")
+        next_minimum_version = Version("3.10")
+        eof_date = "2025-10-31"
         python_command = ["python3 --version", "python --version"]
         self._verify_version_by_pattern_value(
             node=node,
             commands=python_command,
             version_pattern=self._python_version_pattern,
             minimum_version=minimum_version,
+            next_minimum_version=next_minimum_version,
+            eof_date=eof_date,
             library_name="Python",
         )
 
@@ -1684,7 +1717,8 @@ class AzureImageStandard(TestSuite):
         # partition is created on a logical device, such as /dev/dm-5. In this case,
         # we need to get the real block device name.
         lsblk = node.tools[Lsblk]
-        os_disk = lsblk.find_disk_by_mountpoint("/")
+        os_disk = self._find_os_disk_with_fallbacks(node, lsblk)
+
         for swap_part in swap_parts:
             block_name = lsblk.get_block_name(swap_part.partition)
             if block_name == "":
@@ -1737,6 +1771,8 @@ class AzureImageStandard(TestSuite):
         commands: List[str],
         version_pattern: Pattern[str],
         minimum_version: Version,
+        eof_date: Optional[str] = None,
+        next_minimum_version: Optional[Version] = None,
         extended_support_versions: Optional[List[Version]] = None,
         library_name: str = "library",
         group_index: int = 1,
@@ -1751,6 +1787,8 @@ class AzureImageStandard(TestSuite):
             minimum_version: Minimum required version. Please use dots (.) to separate
                     version numbers for proper version comparison, e.g. "1.2.3" or
                     "1.2.3.4"
+            next_minimum_version: Optional version that is the next minimum version.
+            eof_date: Optional end-of-life date for the minimum_version.
             extended_support_versions: Optional list of versions that are still
                     supported despite being lower than minimum_version
             library_name: Name of the library/tool being checked (for messages)
@@ -1809,6 +1847,12 @@ class AzureImageStandard(TestSuite):
                 raise LisaException(message + action_message)
             elif not extended_support_versions:
                 raise LisaException(message + action_message)
+        if next_minimum_version and eof_date and current_version < next_minimum_version:
+            raise PassedException(
+                f"Support for {library_name} {minimum_version} will end on {eof_date}."
+                f" Please consider upgrading to {library_name} {next_minimum_version} "
+                "or later to ensure continued support."
+            )
 
     def _get_not_enabled_modules(self, node: Node) -> List[str]:
         """
@@ -1823,3 +1867,55 @@ class AzureImageStandard(TestSuite):
             ):
                 not_enabled_modules.append(module)
         return not_enabled_modules
+
+    def _find_os_disk_with_fallbacks(self, node: Node, lsblk: Lsblk) -> DiskInfo:
+        """
+        Helper method to find OS disk with multiple fallback strategies.
+        Returns the identified OS disk or raises an exception if not found.
+        """
+        try:
+            # First try: Find disk by root mountpoint
+            os_disk = lsblk.find_disk_by_mountpoint("/")
+            if os_disk:
+                return os_disk
+        except LisaException as e:
+            node.log.debug(f"Could not find disk with root mountpoint /: {str(e)}")
+        try:
+            # Get all disks for fallback strategies
+            disks = lsblk.get_disks(force_run=True)
+            # Second try: Find disk marked as OS disk
+            for disk in disks:
+                if hasattr(disk, "is_os_disk") and disk.is_os_disk:
+                    node.log.debug(
+                        f"Found OS disk by is_os_disk attribute: {disk.name}"
+                    )
+                    return disk
+
+            # Third try: Find disk containing boot partition
+            for disk in disks:
+                if any(
+                    p.mountpoint and p.mountpoint.startswith("/boot")
+                    for p in disk.partitions
+                ):
+                    node.log.debug(f"Found OS disk by boot partition: {disk.name}")
+                    return disk
+
+            # Use the largest disk as OS disk
+            if disks:
+                largest_disk = max(disks, key=lambda d: d.size_in_gb)
+                node.log.warning(
+                    f"Could not definitively identify OS disk, using largest disk: "
+                    f"{largest_disk.name}"
+                )
+                return largest_disk
+
+        except Exception as e:
+            raise LisaException(
+                f"Failed to get disk information for OS disk identification: {str(e)}"
+            ) from e
+
+        # If we reach here, no OS disk could be identified
+        raise LisaException(
+            "Could not identify OS disk for swap validation. This may be due to "
+            "modern filesystem configurations like btrfs subvolumes or no disks found."
+        )

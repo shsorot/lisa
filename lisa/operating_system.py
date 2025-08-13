@@ -1,5 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ from lisa.util import (
     SkippedException,
     UnsupportedDistroException,
     filter_ansi_escape,
+    find_group_in_lines,
     get_matched_str,
     parse_version,
     retry_without_exceptions,
@@ -850,11 +852,66 @@ class Debian(Linux):
     def name_pattern(cls) -> Pattern[str]:
         return re.compile("^debian|Forcepoint|Kali$")
 
-    def add_key(self, server_name: str, key: str) -> None:
-        self._node.execute(
-            f"apt-key adv --keyserver {server_name} --recv-keys {key}",
-            sudo=True,
-        )
+    def add_key(self, server_name: str, key: str = "") -> None:
+        # apt-key add is deprecated starting from Ubuntu 2504.
+        # Use gpg to import the key instead.
+        apt_key_available = False
+        if (
+            self._node.execute("command -v apt-key", shell=True, sudo=True).exit_code
+            == 0
+        ):
+            apt_key_available = True
+
+        if key:
+            if apt_key_available:
+                self._node.execute(
+                    cmd=f"apt-key adv --keyserver {server_name} --recv-keys {key}",
+                    sudo=True,
+                    expected_exit_code=0,
+                    expected_exit_code_failure_message="fail to add apt key",
+                )
+            else:
+                # get the key from server_name, and export it to /etc/apt/trusted.gpg.d
+                self._node.execute(
+                    cmd=f"gpg --keyserver {server_name} --recv-keys {key}",
+                    sudo=True,
+                    expected_exit_code=0,
+                    expected_exit_code_failure_message="fail to get gpg key",
+                )
+                self._node.execute(
+                    cmd=f"gpg --export {key} > /etc/apt/trusted.gpg.d/{key}.gpg",
+                    sudo=True,
+                    expected_exit_code=0,
+                    expected_exit_code_failure_message="fail to export gpg key",
+                    shell=True,
+                )
+        else:
+            # Sometimes, the key is not provided, but the server_name
+            # is a URL to download the key file.
+            wget = self._node.tools[Wget]
+            key_file_path = wget.get(
+                url=server_name,
+                file_path=str(self._node.working_path),
+                force_run=True,
+            )
+            if apt_key_available:
+                self._node.execute(
+                    cmd=f"apt-key add {key_file_path}",
+                    sudo=True,
+                    expected_exit_code=0,
+                    expected_exit_code_failure_message="fail to add apt key",
+                )
+            else:
+                key_basename = os.path.basename(key_file_path)
+                self._node.execute(
+                    cmd=(
+                        f"gpg --dearmor -o /etc/apt/trusted.gpg.d/{key_basename}.gpg "
+                        f"{key_file_path}"
+                    ),
+                    sudo=True,
+                    expected_exit_code=0,
+                    expected_exit_code_failure_message="fail to add gpg key",
+                )
 
     def get_apt_error(self, stdout: str) -> List[str]:
         error_lines: List[str] = []
@@ -994,18 +1051,7 @@ class Debian(Linux):
         self._initialize_package_installation()
         if keys_location:
             for key_location in keys_location:
-                wget = self._node.tools[Wget]
-                key_file_path = wget.get(
-                    url=key_location,
-                    file_path=str(self._node.working_path),
-                    force_run=True,
-                )
-                self._node.execute(
-                    cmd=f"apt-key add {key_file_path}",
-                    sudo=True,
-                    expected_exit_code=0,
-                    expected_exit_code_failure_message="fail to add apt key",
-                )
+                self.add_key(server_name=key_location)
         # This command will trigger apt update too, so it doesn't need to update
         # repos again.
 
@@ -2017,6 +2063,121 @@ class CBLMariner(RPMDistro):
             sudo=True,
         )
         self._node.tools[Service].restart_service("systemd-logind")
+
+    def _replace_default_entry(self, entry: str) -> None:
+        self._log.debug(f"set boot entry to: {entry}")
+
+        # Check if GRUB_DEFAULT already exists in the file
+        grep_result = self._node.execute(
+            "grep -q '^GRUB_DEFAULT=' /etc/default/grub",
+            sudo=True,
+            no_error_log=True,
+        )
+
+        # substitute if GRUB_DEFAULT exists, otherwise append it
+        if grep_result.exit_code == 0:
+            sed = self._node.tools[Sed]
+            sed.substitute(
+                regexp="GRUB_DEFAULT=.*",
+                replacement=f"GRUB_DEFAULT='{entry}'",
+                file="/etc/default/grub",
+                sudo=True,
+            )
+        else:
+            self._node.execute(
+                f"echo \"GRUB_DEFAULT='{entry}'\" >> /etc/default/grub",
+                sudo=True,
+                shell=True,
+                expected_exit_code=0,
+                expected_exit_code_failure_message="Failed to append GRUB_DEFAULT",
+            )
+
+        # output to log for troubleshooting
+        cat = self._node.tools[Cat]
+        cat.run("/etc/default/grub")
+
+    def replace_boot_kernel(self, kernel_version: str) -> None:
+        self._log.info(
+            f"Configuring Grub to boot into kernel version: {kernel_version}"
+        )
+
+        # Extract the actual kernel version from RPM package name
+        # Examples:
+        # kernel-lvbs-6.6.89-9.cm2.x86_64 -> 6.6.89-9.cm2
+        # kernel-6.6.89-9.azl3.x86_64 -> 6.6.89-9.azl3
+        # kernel-6.6.89-9.azl3.aarch64 -> 6.6.89-9.azl3
+        extracted_version = kernel_version
+        rpm_version_pattern = re.compile(
+            r"^kernel-(?:[^-]+-)*(?P<version>\d+\.\d+\.\d+.*?)\.(x86_64|aarch64)$"
+        )
+        match_result = find_group_in_lines(
+            kernel_version, rpm_version_pattern, single_line=True
+        )
+        if match_result.get("version"):
+            extracted_version = match_result["version"]
+            self._log.info(
+                f"Extracted kernel version '{extracted_version}' "
+                f"from RPM package '{kernel_version}'"
+            )
+        else:
+            self._log.debug(
+                f"Could not extract version from '{kernel_version}', using as-is"
+            )
+
+        # rebuild GRUB configuration to include the new kernel
+        self._node.execute(
+            "grub2-mkconfig -o /boot/grub2/grub.cfg",
+            sudo=True,
+            expected_exit_code=0,
+            expected_exit_code_failure_message="Failed to rebuild GRUB configuration",
+        )
+
+        # Parse the GRUB configuration to find the correct menu entry name
+        grub_cfg_result = self._node.execute(
+            "cat /boot/grub2/grub.cfg",
+            sudo=True,
+            expected_exit_code=0,
+            expected_exit_code_failure_message="Failed to read GRUB configuration",
+        )
+        # Examples of potential menu entries:
+        # For kernel-6.6.96-3.cm2.x86_64 => 6.6.96-3.cm2
+        # => menuentry 'AzureLinux GNU/Linux, with Linux 6.6.96-3.cm2'
+        menu_entry_pattern = re.compile(
+            rf"menuentry '(?P<entry>[^']*{re.escape(extracted_version)}\s*)'",
+            re.IGNORECASE,
+        )
+        match_result = find_group_in_lines(
+            grub_cfg_result.stdout, menu_entry_pattern, single_line=True
+        )
+        menu_entry_name = match_result.get("entry")
+
+        if not menu_entry_name:
+            self._log.warning(
+                f"Could not find GRUB menu entry for kernel version "
+                f"'{extracted_version}' (original: '{kernel_version}'). "
+                f"GRUB configuration may not be updated properly."
+            )
+            return
+
+        self._log.info(f"Found GRUB menu entry: {menu_entry_name}")
+
+        # Set the new kernel as default using the existing method
+        self._replace_default_entry(menu_entry_name)
+
+        # Rebuild GRUB configuration to apply the changes
+        self._node.execute(
+            "grub2-mkconfig -o /boot/grub2/grub.cfg",
+            sudo=True,
+            expected_exit_code=0,
+            expected_exit_code_failure_message=(
+                "Failed to rebuild GRUB configuration with new default"
+            ),
+        )
+
+        self._log.info(
+            f"Successfully configured GRUB to boot into kernel version "
+            f"'{extracted_version}' (from RPM package '{kernel_version}')"
+        )
 
 
 @dataclass
