@@ -277,7 +277,7 @@ class Provisioning(TestSuite):
         The reboot times is summarized after the test is run
         """,
         priority=3,
-        timeout=7200,
+        timeout=10800,
         requirement=simple_requirement(
             environment_status=EnvironmentStatus.Deployed,
             supported_features=[SerialConsole],
@@ -289,12 +289,12 @@ class Provisioning(TestSuite):
             for i in range(100):
                 elapsed = self._smoke_test(log, node, log_path, "stress_reboot")
                 reboot_times.append((i + 1, elapsed))
-                log.debug(f"Reboot iterations {i+1}/100 completed in {elapsed:.2f}s")
+                log.debug(f"Reboot iterations {i + 1}/100 completed in {elapsed:.2f}s")
         except PassedException as e:
             raise LisaException(e)
         finally:
             times = [time for _, time in reboot_times if isinstance(time, (int, float))]
-            log.info(f"completed {i+1}/100 iterations;summary:")
+            log.info(f"completed {i + 1}/100 iterations;summary:")
             log.info(f"Min reboot time: {min(times):.2f}s")
             log.info(f"Max reboot time: {max(times):.2f}s")
             log.info(f"Average reboot time: {mean(times):.2f}s")

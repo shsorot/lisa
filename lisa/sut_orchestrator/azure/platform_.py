@@ -31,9 +31,9 @@ from azure.mgmt.compute.models import (
     VirtualMachine,
     VirtualMachineImage,
 )
-from azure.mgmt.marketplaceordering.models import AgreementTerms  # type: ignore
-from azure.mgmt.resource import FeatureClient, SubscriptionClient  # type: ignore
-from azure.mgmt.resource.resources.models import (  # type: ignore
+from azure.mgmt.marketplaceordering.models import AgreementTerms
+from azure.mgmt.resource import FeatureClient, SubscriptionClient
+from azure.mgmt.resource.resources.models import (
     Deployment,
     DeploymentMode,
     DeploymentProperties,
@@ -41,7 +41,7 @@ from azure.mgmt.resource.resources.models import (  # type: ignore
 from cachetools import TTLCache, cached
 from dataclasses_json import dataclass_json
 from marshmallow import validate
-from msrestazure.azure_cloud import (  # type: ignore
+from msrestazure.azure_cloud import (
     AZURE_CHINA_CLOUD,
     AZURE_GERMAN_CLOUD,
     AZURE_PUBLIC_CLOUD,
@@ -72,8 +72,10 @@ from lisa.util import (
     LisaTimeoutException,
     NotMeetRequirementException,
     ResourceAwaitableException,
+    RootFsMountFailedException,
     SkippedException,
     check_panic,
+    check_rootfs_failure,
     constants,
     dump_file,
     field_metadata,
@@ -119,7 +121,7 @@ from .common import (
     check_or_create_storage_account,
     convert_to_azure_node_space,
     get_compute_client,
-    get_deployable_vhd_path,
+    get_deployable_storage_path,
     get_environment_context,
     get_marketplace_ordering_client,
     get_node_context,
@@ -147,12 +149,22 @@ AZURE_INTERNAL_ERROR_PATTERN = re.compile(
 )
 
 VM_SIZE_FALLBACK_PATTERNS = [
-    # exclude Standard_DS1_v2, because one core is too slow,
-    # and doesn't work in some distro
-    re.compile(r"Standard_DS((?!1)[\d])_v2"),
-    re.compile(r"Standard_DS([\d]{2})_v2"),
+    # First priority: Standard_D series with single digit
+    # (excluding D1) because one core is too slow, and doesn't work in some distro
+    # D[S]*[\d]+' is used as instead of 'D[\d]+' to
+    # select older VM sizes like 'Standard_DS5_v2'
+    # e.g., Standard_DS2_v2, Standard_D2_v5, Standard_D4s_v3
+    re.compile(r"^Standard_D[S]*((?!1)[\d])[a-z]*_v\d+$"),
+    # Second Priority, remaining D series VM Sizes with two digit core count
+    # eg: Standard_D12_v5, Standard_D24s_v3
+    re.compile(r"^Standard_D[S]*([\d]{2})[a-z]*_v\d+$"),
+    # Third priority: Standard VM sizes
+    # e.g., Standard_D64s_v5, Standard_F32as_v6, Standard_E16ads_v5
+    re.compile(r"^Standard_[A-Z]+\d+[a-z]*_v\d+$"),
+    # Catch-all for any remaining VM sizes
     re.compile(r".*"),
 ]
+
 LOCATIONS = [
     "westus3",
     "southeastasia",
@@ -717,6 +729,7 @@ class AzurePlatform(Platform):
             log_file_name.write_bytes(log_response_content)
             if check_serial_console is True:
                 check_panic(log_response_content.decode("utf-8"), "provision", log)
+                check_rootfs_failure(log_response_content.decode("utf-8"), log)
 
     def _get_node_information(self, node: Node) -> Dict[str, str]:
         platform_runbook = cast(schema.Platform, self.runbook)
@@ -1414,13 +1427,15 @@ class AzurePlatform(Platform):
         if azure_node_runbook.vhd and azure_node_runbook.vhd.vhd_path:
             # vhd is higher priority
             vhd = azure_node_runbook.vhd
-            vhd.vhd_path = get_deployable_vhd_path(
+            vhd.vhd_path = get_deployable_storage_path(
                 self, vhd.vhd_path, azure_node_runbook.location, log
             )
-            if vhd.vmgs_path:
-                vhd.vmgs_path = get_deployable_vhd_path(
-                    self, vhd.vmgs_path, azure_node_runbook.location, log
-                )
+            vhd.cvm_gueststate_path = get_deployable_storage_path(
+                self, vhd.cvm_gueststate_path, azure_node_runbook.location, log
+            )
+            vhd.cvm_metadata_path = get_deployable_storage_path(
+                self, vhd.cvm_metadata_path, azure_node_runbook.location, log
+            )
             azure_node_runbook.vhd = vhd
             azure_node_runbook.marketplace = None
             azure_node_runbook.shared_gallery = None
@@ -1483,13 +1498,15 @@ class AzurePlatform(Platform):
         if arm_parameters.vhd and arm_parameters.vhd.vhd_path:
             # vhd is higher priority
             vhd = arm_parameters.vhd
-            vhd.vhd_path = get_deployable_vhd_path(
+            vhd.vhd_path = get_deployable_storage_path(
                 self, vhd.vhd_path, arm_parameters.location, log
             )
-            if vhd.vmgs_path:
-                vhd.vmgs_path = get_deployable_vhd_path(
-                    self, vhd.vmgs_path, arm_parameters.location, log
-                )
+            vhd.cvm_gueststate_path = get_deployable_storage_path(
+                self, vhd.cvm_gueststate_path, arm_parameters.location, log
+            )
+            vhd.cvm_metadata_path = get_deployable_storage_path(
+                self, vhd.cvm_metadata_path, arm_parameters.location, log
+            )
             arm_parameters.vhd = vhd
             arm_parameters.osdisk_size_in_gb = max(
                 arm_parameters.osdisk_size_in_gb,
@@ -1586,7 +1603,7 @@ class AzurePlatform(Platform):
 
         return arm_parameters
 
-    @retry(exceptions=ResourceNotFoundError, tries=5, delay=2)
+    @retry(exceptions=ResourceNotFoundError, tries=5, delay=2)  # type: ignore
     def _validate_template(
         self, deployment_parameters: Dict[str, Any], log: Logger
     ) -> None:
@@ -1705,7 +1722,7 @@ class AzurePlatform(Platform):
                     self._save_console_log_and_check_panic(
                         resource_group_name, environment, log, True
                     )
-                except KernelPanicException as ex:
+                except (KernelPanicException, RootFsMountFailedException) as ex:
                     if (
                         "OSProvisioningTimedOut: OS Provisioning for VM"
                         in error_message
@@ -1735,7 +1752,7 @@ class AzurePlatform(Platform):
         return errors
 
     # the VM may not be queried after deployed. use retry to mitigate it.
-    @retry(exceptions=LisaException, tries=150, delay=2)
+    @retry(exceptions=LisaException, tries=150, delay=2)  # type: ignore
     def _load_vms(
         self, resource_group_name: str, log: Logger
     ) -> Dict[str, VirtualMachine]:
@@ -2533,7 +2550,7 @@ class AzurePlatform(Platform):
         self, community_gallery_image: CommunityGalleryImageSchema
     ) -> int:
         found_image = self._get_cgi_version(community_gallery_image)
-        storage_profile = found_image.storage_profile  # type: ignore
+        storage_profile = found_image.storage_profile
         assert storage_profile, "'storage_profile' must not be 'None'"
         assert storage_profile.os_disk_image, "'os_disk_image' must not be 'None'"
         assert (
@@ -2798,7 +2815,7 @@ class AzurePlatform(Platform):
         # not all have the capability
         return False
 
-    @cached(cache=TTLCache(maxsize=50, ttl=10))
+    @cached(cache=TTLCache(maxsize=50, ttl=10))  # type: ignore
     def _get_vm_family_remaining_usages(
         self, location: str
     ) -> Dict[str, Tuple[int, int]]:
@@ -3020,9 +3037,11 @@ class AzurePlatform(Platform):
         azure_runbook = node_space.get_extended_runbook(AzureNodeSchema, AZURE)
         if azure_runbook.vhd:
             if node_space.network_interface:
+                # node_space.network_interface must be passed in as capability
+                # because azure_runbook.vhd.network_data_path may be None
                 data_path = search_space.intersect_setspace_by_priority(  # type: ignore
-                    node_space.network_interface.data_path,
                     azure_runbook.vhd.network_data_path,
+                    node_space.network_interface.data_path,
                     [],
                 )
                 node_space.network_interface.data_path = data_path

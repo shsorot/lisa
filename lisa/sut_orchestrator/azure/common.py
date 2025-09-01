@@ -49,10 +49,10 @@ from azure.mgmt.keyvault.models import (
     VaultCreateOrUpdateParameters,
     VaultProperties,
 )
-from azure.mgmt.marketplaceordering import MarketplaceOrderingAgreements  # type: ignore
+from azure.mgmt.marketplaceordering import MarketplaceOrderingAgreements
 from azure.mgmt.msi import ManagedServiceIdentityClient
-from azure.mgmt.network import NetworkManagementClient  # type: ignore
-from azure.mgmt.network.models import (  # type: ignore
+from azure.mgmt.network import NetworkManagementClient
+from azure.mgmt.network.models import (
     PrivateDnsZoneConfig,
     PrivateDnsZoneGroup,
     PrivateEndpoint,
@@ -60,18 +60,15 @@ from azure.mgmt.network.models import (  # type: ignore
     PrivateLinkServiceConnectionState,
     Subnet,
 )
-from azure.mgmt.privatedns import PrivateDnsManagementClient  # type: ignore
-from azure.mgmt.privatedns.models import (  # type: ignore
+from azure.mgmt.privatedns import PrivateDnsManagementClient
+from azure.mgmt.privatedns.models import (
     ARecord,
     PrivateZone,
     RecordSet,
     SubResource,
     VirtualNetworkLink,
 )
-from azure.mgmt.resource import (  # type: ignore
-    ResourceManagementClient,
-    SubscriptionClient,
-)
+from azure.mgmt.resource import ResourceManagementClient, SubscriptionClient
 from azure.mgmt.storage import StorageManagementClient
 from azure.mgmt.storage.models import Sku, StorageAccountCreateParameters
 from azure.storage.blob import (
@@ -85,7 +82,7 @@ from azure.storage.blob import (
 from azure.storage.fileshare import ShareServiceClient
 from dataclasses_json import dataclass_json
 from marshmallow import fields, validate
-from msrestazure.azure_cloud import AZURE_PUBLIC_CLOUD, Cloud  # type: ignore
+from msrestazure.azure_cloud import AZURE_PUBLIC_CLOUD, Cloud
 from PIL import Image, UnidentifiedImageError
 from requests.exceptions import ChunkedEncodingError
 from retry import retry
@@ -525,17 +522,19 @@ class SharedImageGallerySchema(AzureImageSchema):
 @dataclass
 class VhdSchema(AzureImageSchema):
     vhd_path: str = ""
-    vmgs_path: Optional[str] = None
+    cvm_gueststate_path: Optional[str] = None
+    cvm_metadata_path: Optional[str] = None
 
     def load_from_platform(self, platform: "AzurePlatform") -> None:
         # There are no platform tags to parse, but we can assume the
         # security profile based on the presence of a VMGS path.
-        if self.vmgs_path:
+        if self.cvm_gueststate_path:
             self.security_profile = search_space.SetSpace(
                 True,
                 [
                     SecurityProfileType.CVM,
                     SecurityProfileType.Stateless,
+                    SecurityProfileType.SecureBoot,
                 ],
             )
             self.encrypt_disk = search_space.SetSpace(True, [True, False])
@@ -876,8 +875,10 @@ class AzureNodeSchema:
             else:
                 add_secret(vhd.vhd_path, PATTERN_URL)
                 self._orignal_vhd_path = replace(vhd.vhd_path, mask=PATTERN_URL)
-                if vhd.vmgs_path:
-                    add_secret(vhd.vmgs_path, PATTERN_URL)
+                if vhd.cvm_gueststate_path:
+                    add_secret(vhd.cvm_gueststate_path, PATTERN_URL)
+                if vhd.cvm_metadata_path:
+                    add_secret(vhd.cvm_metadata_path, PATTERN_URL)
                 # this step makes vhd_raw is validated, and
                 # filter out any unwanted content.
                 self.vhd_raw = vhd.to_dict()  # type: ignore
@@ -1886,7 +1887,7 @@ def copy_vhd_to_storage(
     properties = original_blob_client.get_blob_properties()
     content_settings: Optional[ContentSettings] = properties.content_settings
     if content_settings:
-        original_key = content_settings.get("content_md5", None)  # type: ignore
+        original_key = content_settings.get("content_md5", None)
 
     container_client = get_or_create_storage_container(
         credential=platform.credential,
@@ -1907,9 +1908,7 @@ def copy_vhd_to_storage(
             if blob:
                 # check if hash key matched with original key.
                 if blob.content_settings:
-                    cached_key = blob.content_settings.get(
-                        "content_md5", None
-                    )  # type: ignore
+                    cached_key = blob.content_settings.get("content_md5", None)
                 if is_stuck_copying(blob_client, log):
                     # Delete the stuck vhd.
                     blob_client.delete_blob(delete_snapshots="include")
@@ -2163,7 +2162,7 @@ def save_console_log(
         log.debug(f"Failed to save console log: {ex}")
         return b""
 
-    return log_response.content
+    return log_response.content  # type: ignore
 
 
 def load_environment(
@@ -2252,7 +2251,7 @@ def get_vm(platform: "AzurePlatform", node: Node) -> Any:
     return vm
 
 
-@retry(exceptions=LisaException, tries=150, delay=2)
+@retry(exceptions=LisaException, tries=150, delay=2)  # type: ignore
 def get_primary_ip_addresses(
     platform: "AzurePlatform",
     resource_group_name: str,
@@ -2392,14 +2391,17 @@ def _generate_sas_token_for_vhd(
 
 
 @lru_cache(maxsize=10)  # noqa: B019
-def get_deployable_vhd_path(
-    platform: "AzurePlatform", vhd_path: str, location: str, log: Logger
+def get_deployable_storage_path(
+    platform: "AzurePlatform", vhd_path: Optional[str], location: str, log: Logger
 ) -> str:
     """
     The sas url is not able to create a vm directly, so this method check if
-    the vhd_path is a sas url. If so, copy it to a location in current
-    subscription, so it can be deployed.
+    the vhd_path (disk image, CVM guest state, or CVM metadata) is a sas url.
+    If so, copy it to a location in current subscription, so it can be deployed.
     """
+    if not vhd_path:
+        return ""
+
     matches = SAS_URL_PATTERN.match(vhd_path)
     if not matches:
         vhd_details = get_vhd_details(platform, vhd_path)
@@ -2411,6 +2413,7 @@ def get_deployable_vhd_path(
             return vhd_path
         else:
             vhd_path = _generate_sas_token_for_vhd(platform, vhd_details)
+            assert isinstance(vhd_path, str), f"fail to generate sas url for {vhd_path}"
             matches = SAS_URL_PATTERN.match(vhd_path)
             assert matches, f"fail to generate sas url for {vhd_path}"
             add_secret(vhd_path, PATTERN_URL)
@@ -2634,7 +2637,7 @@ def check_or_create_gallery_image_version(
                         "hostCaching": host_caching_type,
                         "source": {
                             "uri": vhd_path,
-                            "id": (
+                            "storageAccountId": (
                                 f"/subscriptions/{platform.subscription_id}/"
                                 f"resourceGroups/{vhd_resource_group_name}"
                                 "/providers/Microsoft.Storage/storageAccounts/"
@@ -2821,7 +2824,7 @@ class DataDisk:
             raise LisaException(f"Data disk type {disk_type} is unsupported.")
 
 
-class StaticAccessTokenCredential(TokenCredential):
+class StaticAccessTokenCredential(TokenCredential):  # type: ignore
     def __init__(self, token: str) -> None:
         """
         Initialize StaticAccessTokenCredential with the provided token.
@@ -3141,7 +3144,7 @@ def assign_access_policy(
     return keyvault_poller.result()
 
 
-@retry(tries=5, delay=1)
+@retry(tries=5, delay=1)  # type: ignore
 def create_certificate(
     platform: "AzurePlatform",
     vault_url: str,
@@ -3208,7 +3211,7 @@ def check_certificate_existence(
             )
 
 
-@retry(tries=10, delay=1)
+@retry(tries=10, delay=1)  # type: ignore
 def rotate_certificate(
     platform: "AzurePlatform",
     vault_url: str,
@@ -3251,7 +3254,7 @@ def rotate_certificate(
     )
 
 
-@retry(tries=10, delay=1)
+@retry(tries=10, delay=1)  # type: ignore
 def delete_certificate(
     platform: "AzurePlatform",
     vault_url: str,
@@ -3279,7 +3282,7 @@ def is_cloud_init_enabled(node: Node) -> bool:
     return False
 
 
-@retry(tries=10, delay=1, jitter=(0.5, 1))
+@retry(tries=10, delay=1, jitter=(0.5, 1))  # type: ignore
 def load_location_info_from_file(
     cached_file_name: Path, log: Logger
 ) -> Optional[AzureLocation]:

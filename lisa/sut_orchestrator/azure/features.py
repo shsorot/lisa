@@ -30,10 +30,10 @@ from azure.mgmt.compute.models import (
     VirtualMachineUpdate,
 )
 from azure.mgmt.core.exceptions import ARMErrorFormat
-from azure.mgmt.network.models import RouteTable  # type: ignore
-from azure.mgmt.serialconsole import MicrosoftSerialConsoleClient  # type: ignore
-from azure.mgmt.serialconsole.models import SerialPort, SerialPortState  # type: ignore
-from azure.mgmt.serialconsole.operations import SerialPortsOperations  # type: ignore
+from azure.mgmt.network.models import RouteTable
+from azure.mgmt.serialconsole import MicrosoftSerialConsoleClient
+from azure.mgmt.serialconsole.models import SerialPort, SerialPortState
+from azure.mgmt.serialconsole.operations import SerialPortsOperations
 from dataclasses_json import dataclass_json
 from retry import retry
 
@@ -329,27 +329,27 @@ class SerialConsole(AzureFeatureMixin, features.SerialConsole):
     ) -> Optional[schema.FeatureSettings]:
         return schema.FeatureSettings.create(cls.name())
 
-    @retry(tries=3, delay=5)
+    @retry(tries=3, delay=5)  # type: ignore
     def write(self, data: str) -> None:
         # websocket connection is not stable, so we need to retry
         try:
             self._write(data)
             return
-        except websockets.ConnectionClosed as e:  # type: ignore
+        except websockets.ConnectionClosed as e:
             # If the connection is closed, we need to reconnect
             self._log.debug(f"Connection closed on read serial console: {e}")
             self._ws = None
             self._get_connection()
             raise e
 
-    @retry(tries=3, delay=5)
+    @retry(tries=3, delay=5)  # type: ignore
     def read(self) -> str:
         # websocket connection is not stable, so we need to retry
         try:
             # run command with timeout
             output = self._read()
             return output
-        except websockets.ConnectionClosed as e:  # type: ignore
+        except websockets.ConnectionClosed as e:
             # If the connection is closed, we need to reconnect
             self._log.debug(f"Connection closed on read serial console: {e}")
             self._ws = None
@@ -378,7 +378,7 @@ class SerialConsole(AzureFeatureMixin, features.SerialConsole):
 
             # create websocket connection
             ws = self._get_event_loop().run_until_complete(
-                websockets.connect(connection_str)  # type: ignore
+                websockets.connect(connection_str)
             )
 
             token = self._get_access_token()
@@ -642,7 +642,7 @@ class Gpu(AzureFeatureMixin, features.Gpu):
         release = self._node.os.information.release
         if release not in supported_versions.get(type(self._node.os), []):
             raise UnsupportedOperationException("GPU Extension not supported")
-        if type(self._node.os) == Redhat:
+        if type(self._node.os) is Redhat:
             self._node.os.handle_rhui_issue()
         extension = self._node.features[AzureExtension]
         try:
@@ -1103,7 +1103,7 @@ class NetworkInterface(AzureFeatureMixin, features.NetworkInterface):
     # Subroutine for applying route table to subnet.
     # We don't want to retry the entire routine if we
     # catch an exception in this section.
-    @retry(HttpResponseError, tries=5, delay=1, backoff=1.3)
+    @retry(HttpResponseError, tries=5, delay=1, backoff=1.3)  # type: ignore
     def _do_update_subnet(
         self,
         virtual_network_name: str,
@@ -1139,7 +1139,7 @@ class NetworkInterface(AzureFeatureMixin, features.NetworkInterface):
     # Subroutine to create the route table,
     # seperated because the create/apply process has multiple potential timeouts.
     # We don't want to restart the entire process if one step fails.
-    @retry(HttpResponseError, tries=5, delay=1, backoff=1.3)
+    @retry(HttpResponseError, tries=5, delay=1, backoff=1.3)  # type: ignore
     def _do_create_route_table(
         self,
         em_first_hop: str,
@@ -1195,7 +1195,7 @@ class NetworkInterface(AzureFeatureMixin, features.NetworkInterface):
 
         return route_table
 
-    @retry(tries=60, delay=10)
+    @retry(tries=60, delay=10)  # type: ignore
     def _check_sriov_enabled(
         self, enabled: bool, reset_connections: bool = True
     ) -> None:
@@ -1718,6 +1718,7 @@ class Disk(AzureFeatureMixin, features.Disk):
     LUN_PATTERN_BSD = re.compile(
         r"at\s+scbus\d+\s+target\s+\d+\s+lun\s+(\d+)\s+\(.*(da\d+)", re.M
     )
+    _resource_disk_type: Optional[schema.ResourceDiskType] = None
 
     @classmethod
     def settings_type(cls) -> Type[schema.FeatureSettings]:
@@ -1935,7 +1936,7 @@ class Disk(AzureFeatureMixin, features.Disk):
         # create managed disk
         managed_disks = []
         for i in range(count):
-            name = f"lisa_data_disk_{i+current_disk_count}_{self._node.name}"
+            name = f"lisa_data_disk_{i + current_disk_count}_{self._node.name}"
             async_disk_update = compute_client.disks.begin_create_or_update(
                 self._resource_group_name,
                 name,
@@ -2036,12 +2037,14 @@ class Disk(AzureFeatureMixin, features.Disk):
     # function returns the type of resource disk/disks available on the VM
     # raises exception if no resource disk is available
     def get_resource_disk_type(self) -> schema.ResourceDiskType:
-        resource_disks = self.get_resource_disks()
-        if not resource_disks:
-            raise LisaException("No Resource disks are available on VM")
-        return schema.ResourceDiskType(
-            self._node.features[Disk].get_disk_type(disk=resource_disks[0])
-        )
+        if self._resource_disk_type is None:
+            resource_disks = self.get_resource_disks()
+            if not resource_disks:
+                raise LisaException("No Resource disks are available on VM")
+            self._resource_disk_type = schema.ResourceDiskType(
+                self._node.features[Disk].get_disk_type(disk=resource_disks[0])
+            )
+        return self._resource_disk_type
 
     def get_resource_disks(self) -> List[str]:
         resource_disk_list = []
@@ -2542,14 +2545,6 @@ class SecurityProfileSettings(features.SecurityProfileSettings):
 
 
 class SecurityProfile(AzureFeatureMixin, features.SecurityProfile):
-    # Convert Security Profile Setting to Arm Parameter Value
-    _security_profile_mapping = {
-        SecurityProfileType.Standard: "",
-        SecurityProfileType.SecureBoot: "TrustedLaunch",
-        SecurityProfileType.CVM: "ConfidentialVM",
-        SecurityProfileType.Stateless: "ConfidentialVM",
-    }
-
     def _initialize(self, *args: Any, **kwargs: Any) -> None:
         super()._initialize(*args, **kwargs)
         self._initialize_information(self._node)
@@ -2615,42 +2610,81 @@ class SecurityProfile(AzureFeatureMixin, features.SecurityProfile):
         assert len(environment.nodes._list) == len(arm_parameters.nodes)
         for node, node_parameters in zip(environment.nodes._list, arm_parameters.nodes):
             assert node.capability.features
+
             security_profile = [
                 feature_setting
                 for feature_setting in node.capability.features.items
                 if feature_setting.type == FEATURE_NAME_SECURITY_PROFILE
             ]
-            if security_profile:
-                settings = security_profile[0]
-                assert isinstance(settings, SecurityProfileSettings)
-                assert isinstance(settings.security_profile, SecurityProfileType)
-                assert isinstance(settings.encrypt_disk, bool)
-                node_parameters.security_profile[
-                    "security_type"
-                ] = cls._security_profile_mapping[settings.security_profile]
-                if settings.security_profile == SecurityProfileType.Stateless:
-                    node_parameters.security_profile["secure_boot"] = False
-                    node_parameters.security_profile[
-                        "encryption_type"
-                    ] = "NonPersistedTPM"
+            if not security_profile:
+                continue
+
+            settings = security_profile[0]
+            assert isinstance(settings, SecurityProfileSettings)
+            assert isinstance(settings.security_profile, SecurityProfileType)
+            assert isinstance(settings.encrypt_disk, bool)
+
+            # Set Security Type and Encryption Type
+            # microsoft.compute/virtualmachines
+            #     SecurityProfile.securityType =
+            #         {'TrustedLaunch', 'ConfidentialVM', ''}
+            #     VMDiskSecurityProfile.securityEncryptionType =
+            #         {'DiskWithVMGuestState', 'NonPersistedTPM', 'VMGuestStateOnly'}
+            # microsoft.compute/disks (Replaces VMDiskSecurityProfile for VHDs)
+            #     DiskSecurityProfile.securityType =
+            #         {ConfidentialVM_DiskEncryptedWithCustomerKey',
+            #         'ConfidentialVM_DiskEncryptedWithPlatformKey',
+            #         'ConfidentialVM_NonPersistedTPM',
+            #         'ConfidentialVM_VMGuestStateOnlyEncryptedWithPlatformKey',
+            #         'TrustedLaunch'}
+            is_vhd = bool(node_parameters.vhd)
+            if SecurityProfileType.Standard == settings.security_profile:
+                node_parameters.security_profile["security_type"] = ""
+            elif SecurityProfileType.SecureBoot == settings.security_profile:
+                node_parameters.security_profile["secure_boot"] = True
+                node_parameters.security_profile["security_type"] = "TrustedLaunch"
+                node_parameters.security_profile["encryption_type"] = "TrustedLaunch"
+            elif SecurityProfileType.Stateless == settings.security_profile:
+                node_parameters.security_profile["secure_boot"] = False
+                node_parameters.security_profile["security_type"] = "ConfidentialVM"
+                node_parameters.security_profile["encryption_type"] = (
+                    "ConfidentialVM_NonPersistedTPM" if is_vhd else "NonPersistedTPM"
+                )
+            elif SecurityProfileType.CVM == settings.security_profile:
+                node_parameters.security_profile["secure_boot"] = True
+                node_parameters.security_profile["security_type"] = "ConfidentialVM"
+                if settings.encrypt_disk:
+                    if settings.disk_encryption_set_id:
+                        node_parameters.security_profile["encryption_type"] = (
+                            "ConfidentialVM_DiskEncryptedWithCustomerKey"
+                            if is_vhd
+                            else "DiskWithVMGuestState"
+                        )
+                    else:
+                        node_parameters.security_profile["encryption_type"] = (
+                            "ConfidentialVM_DiskEncryptedWithPlatformKey"
+                            if is_vhd
+                            else "DiskWithVMGuestState"
+                        )
                 else:
-                    node_parameters.security_profile["secure_boot"] = True
                     node_parameters.security_profile["encryption_type"] = (
-                        "DiskWithVMGuestState"
-                        if settings.encrypt_disk
+                        "ConfidentialVM_VMGuestStateOnlyEncryptedWithPlatformKey"
+                        if is_vhd
                         else "VMGuestStateOnly"
                     )
-                node_parameters.security_profile[
-                    "disk_encryption_set_id"
-                ] = settings.disk_encryption_set_id
 
-                if node_parameters.security_profile["security_type"] == "":
-                    node_parameters.security_profile.clear()
-                elif 1 == node_parameters.hyperv_generation:
-                    raise SkippedException(
-                        f"{settings.security_profile} "
-                        "can only be set on gen2 image/vhd."
-                    )
+            # Disk Encryption Set ID
+            node_parameters.security_profile[
+                "disk_encryption_set_id"
+            ] = settings.disk_encryption_set_id
+
+            # Return Skipped Exception if security profile is set on Gen 1 VM
+            if node_parameters.security_profile["security_type"] == "":
+                node_parameters.security_profile.clear()
+            elif 1 == node_parameters.hyperv_generation:
+                raise SkippedException(
+                    f"{settings.security_profile} " "can only be set on gen2 image/vhd."
+                )
 
 
 availability_type_priority: List[AvailabilityType] = [

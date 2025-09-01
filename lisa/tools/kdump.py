@@ -8,7 +8,7 @@ from pathlib import Path, PurePath, PurePosixPath
 from time import sleep
 from typing import TYPE_CHECKING, Any, List, Type, cast
 
-from func_timeout import FunctionTimedOut, func_set_timeout  # type: ignore
+from func_timeout import FunctionTimedOut, func_set_timeout
 from semver import VersionInfo
 
 from lisa.base_tools import Cat, Sed, Service, Wget
@@ -623,8 +623,8 @@ class KdumpCBLMariner(KdumpBase):
 
     def ensure_nr_cpus(self) -> None:
         lscpu = self.node.tools[Lscpu]
-        core_count = lscpu.get_core_count()
-        preferred_nr_cpus = math.ceil(core_count / 56)
+        thread_count = lscpu.get_thread_count()
+        preferred_nr_cpus = math.ceil(thread_count / 56)
         conf_file = "/etc/sysconfig/kdump"
         sed = self.node.tools[Sed]
         # replace nr_cpus=<whatever> to nr_cpus=preferred_nr_cpus
@@ -828,8 +828,8 @@ class KdumpCheck(Tool):
 
     def trigger_kdump_on_specified_cpu(self, cpu_num: int, log_path: Path) -> None:
         lscpu = self.node.tools[Lscpu]
-        cpu_count = lscpu.get_core_count()
-        if cpu_count > cpu_num:
+        thread_count = lscpu.get_thread_count()
+        if thread_count > cpu_num:
             trigger_kdump_cmd = f"taskset -c {cpu_num} echo c > /proc/sysrq-trigger"
             self.kdump_test(
                 log_path=log_path,
@@ -838,7 +838,7 @@ class KdumpCheck(Tool):
         else:
             raise SkippedException(
                 "The cpu count can't meet the test case's requirement. "
-                f"Expected more than {cpu_num} cpus, actual {cpu_count}"
+                f"Expected more than {cpu_num} cpus, actual {thread_count}"
             )
 
     def _check_exists(self) -> bool:
@@ -1015,7 +1015,7 @@ class KdumpCheck(Tool):
                             self.node.execute("df -h")
                             raise LisaException(
                                 "The vmcore file is incomplete with file size"
-                                f" {round(incomplete_file_size/1024/1024, 2)}MB"
+                                f" {round(incomplete_file_size / 1024 / 1024, 2)}MB"
                             )
                 else:
                     # If there is no any dump file in 100s, then raise exception
