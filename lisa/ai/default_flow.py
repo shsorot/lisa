@@ -32,11 +32,8 @@ from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
 from semantic_kernel.contents import AuthorRole, ChatMessageContent
 from semantic_kernel.functions import KernelArguments, kernel_function
 
-from lisa.ai.common import create_agent_execution_settings, get_current_directory
-from lisa.util.logger import Logger
-
-# Module-level logger for callback functions and utility methods
-_logger: Logger
+from . import logger
+from .common import create_agent_execution_settings, get_current_directory
 
 
 def _load_prompt(prompt_filename: str, flow: str) -> str:
@@ -83,7 +80,7 @@ def _agent_response_callback(
         if hasattr(message, "items") and message.items:
             pass
         else:
-            _logger.info(f"💭 {message.name} is thinking...")
+            logger.info(f"💭 {message.name} is thinking...")
     else:
         log_message = f"🤖 {message.name}: {message.content.strip()}"
 
@@ -93,13 +90,14 @@ def _agent_response_callback(
                 if hasattr(item, "function_name"):
                     log_message += f". Also calling: {item.function_name}"
 
-        _logger.info(log_message)
+        logger.info(log_message)
 
 
 class FileSearchPlugin:
-    def __init__(self, paths: List[str], logger: Logger) -> None:
-        self._paths = paths
-        self._logger = logger
+    def __init__(self, paths: List[str]) -> None:
+        self._paths: List[str] = []
+        for path in paths:
+            self._paths.append(os.path.normpath(path))
 
     @kernel_function(  # type: ignore[misc]
         name="search_files",
@@ -127,7 +125,7 @@ class FileSearchPlugin:
 
         if not os.path.exists(path):
             error_message = f"Log folder path does not exist: {path}"
-            self._logger.error(error_message)
+            logger.info(error_message)
             return {"error": error_message}
 
         valid_result = self._valid_path(path)
@@ -142,6 +140,11 @@ class FileSearchPlugin:
         # Parse comma-separated extensions and normalize to lowercase
         extensions = [ext.strip().lower() for ext in file_extensions.split(",")]
         allowed_extensions = extensions
+
+        logger.info(
+            f"Searching for '{search_string}' in {path} "
+            f"with extensions {extensions}"
+        )
 
         # Search both standard logs and serial logs
         for root, _, files in os.walk(path):
@@ -174,12 +177,12 @@ class FileSearchPlugin:
                                 log_context["context"].append(parsed_line)
 
                 except Exception as e:
-                    self._logger.error(f"Error processing file {file_path}: {str(e)}")
+                    logger.info(f"Error processing file {file_path}: {str(e)}")
                     continue
 
         match_count = len(log_context["context"])
-        self._logger.info(
-            f"Search results: {files_found} files processed, "
+        logger.info(
+            f"Searched '{search_string}', {files_found} files processed, "
             f"{match_count} matches found."
         )
 
@@ -212,28 +215,26 @@ class FileSearchPlugin:
             return valid_result
 
         # Add debugging for path resolution
-        self._logger.debug(f"read_text_file called with file_path: {file_path}")
-        self._logger.debug(f"read_text_file normalized path: {norm_path}")
-        self._logger.debug(
-            f"read_text_file absolute path: {os.path.abspath(norm_path)}"
-        )
-        self._logger.debug(f"Path exists check: {os.path.exists(norm_path)}")
+        logger.debug(f"read_text_file called with file_path: {file_path}")
+        logger.debug(f"read_text_file normalized path: {norm_path}")
+        logger.debug(f"read_text_file absolute path: {os.path.abspath(norm_path)}")
+        logger.debug(f"Path exists check: {os.path.exists(norm_path)}")
 
         if not os.path.exists(norm_path):
             error_message = f"File not found: {norm_path}"
-            self._logger.error(error_message)
+            logger.info(error_message)
 
             # Add additional debugging to help identify the issue
             parent_dir = os.path.dirname(norm_path)
-            self._logger.error(f"Parent directory: {parent_dir}")
-            self._logger.error(f"Parent directory exists: {os.path.exists(parent_dir)}")
+            logger.debug(f"Parent directory: {parent_dir}")
+            logger.debug(f"Parent directory exists: {os.path.exists(parent_dir)}")
 
             if os.path.exists(parent_dir):
                 try:
                     files_in_parent = os.listdir(parent_dir)
-                    self._logger.error(f"Files in parent directory: {files_in_parent}")
+                    logger.debug(f"Files in parent directory: {files_in_parent}")
                 except Exception as e:
-                    self._logger.error(f"Cannot list parent directory: {e}")
+                    logger.debug(f"Cannot list parent directory: {e}")
 
             return {"error": error_message}
 
@@ -248,16 +249,16 @@ class FileSearchPlugin:
                     if i > traceback_end:
                         break
 
-            self._logger.info(
+            logger.info(
                 f"Successfully extracted {len(traceback)} lines of context",
             )
         except Exception as e:
             error_message = f"Error reading file {norm_path}: {str(e)}"
-            self._logger.error(error_message)
+            logger.info(error_message)
             return {"error": error_message}
 
         result = "\n".join(traceback)
-        self._logger.debug(f"read_text_file result: {result}")
+        logger.debug(f"read_text_file result: {result}")
         return {"content": result}
 
     def _validate_list_files_input(
@@ -271,17 +272,17 @@ class FileSearchPlugin:
 
         if not os.path.exists(norm_file_path):
             error_message = f"Directory path does not exist: {norm_file_path}"
-            self._logger.error(error_message)
+            logger.info(error_message)
             return {"error": error_message}
 
         if not os.path.isdir(norm_file_path):
             error_message = f"Path is not a directory: {norm_file_path}"
-            self._logger.error(error_message)
+            logger.info(error_message)
             return {"error": error_message}
 
         if offset < 0:
             error_message = f"Invalid offset: {offset}. Offset must be non-negative."
-            self._logger.error(error_message)
+            logger.info(error_message)
             return {"error": error_message}
 
         return None
@@ -326,7 +327,7 @@ class FileSearchPlugin:
                     files.append(item_path)
         except PermissionError:
             error_message = f"Permission denied accessing directory: {folder_path}"
-            self._logger.error(error_message)
+            logger.info(error_message)
             raise PermissionError(error_message)
         return files
 
@@ -354,7 +355,7 @@ class FileSearchPlugin:
         # Validate offset against total files
         if offset >= total_files and total_files > 0:
             error_message = f"Offset {offset} is beyond total file count {total_files}"
-            self._logger.error(error_message)
+            logger.info(error_message)
             return {"error": error_message}
 
         # Calculate pagination boundaries
@@ -368,12 +369,12 @@ class FileSearchPlugin:
 
         # Log results
         extension_info = f" with extension '{file_extensions}'"
-        self._logger.info(
+        logger.info(
             f"Listed {len(paginated_files)} files{extension_info} "
             f"(offset: {offset}, total: {total_files}) under {folder_path}"
         )
 
-        self._logger.debug(f"list_files found: {paginated_files}")
+        logger.debug(f"list_files found: {paginated_files}")
 
         return {
             "files": paginated_files,
@@ -416,7 +417,7 @@ class FileSearchPlugin:
             along with pagination metadata
         """
 
-        self._logger.debug(
+        logger.debug(
             f"Listing files under {folder_path} "
             f"(recursive: {recursive}, max_files: {max_files}, offset: {offset}, "
             f"file_extensions: {file_extensions})"
@@ -429,17 +430,21 @@ class FileSearchPlugin:
 
         # Discover files and filter files
         try:
-            files = self._discover_files(folder_path, file_extensions, recursive)
+            files = self._discover_files(
+                folder_path=folder_path,
+                file_extensions=file_extensions,
+                is_recursive=recursive,
+            )
             result = self._paginate_files(
-                files,
-                offset,
-                max_files,
-                file_extensions,
-                folder_path,
+                files=files,
+                offset=offset,
+                max_files=max_files,
+                file_extensions=file_extensions,
+                folder_path=folder_path,
             )
             return result
         except Exception as e:
-            self._logger.error(f"Error occurred while listing files: {e}")
+            logger.info(f"Error occurred while listing files: {e}")
             return {"error": str(e)}
 
     def _valid_path(self, path: str) -> Dict[str, str]:
@@ -453,7 +458,7 @@ class FileSearchPlugin:
         """
         norm_path = os.path.normpath(path)
         for allowed_path in self._paths:
-            if norm_path.startswith(os.path.normpath(allowed_path)):
+            if norm_path.startswith(allowed_path):
                 return {}
         return {"error": f"Path is out of allowed directories: {path}"}
 
@@ -482,14 +487,13 @@ class FileSearchAgentBase(ChatCompletionAgent):  # type: ignore
         deployment_name: str,
         api_key: str,
         base_url: str,
-        logger: Logger,
     ) -> None:
         super().__init__(
             service=self._create_ai_service(deployment_name, api_key, base_url),
             name=name,
             description=description,
             instructions=instructions,
-            plugins=[FileSearchPlugin(paths=paths, logger=logger)],
+            plugins=[FileSearchPlugin(paths=paths)],
         )
 
     def _create_ai_service(
@@ -663,7 +667,6 @@ class LogSearchAgent(FileSearchAgentBase):
         deployment_name: str,
         api_key: str,
         base_url: str,
-        logger: Logger,
     ) -> None:
         # Load specialized system prompt for log search
         instructions = _load_prompt("log_search.txt", flow="default")
@@ -680,7 +683,6 @@ class LogSearchAgent(FileSearchAgentBase):
             deployment_name=deployment_name,
             api_key=api_key,
             base_url=base_url,
-            logger=logger,
         )
 
 
@@ -701,7 +703,6 @@ class CodeSearchAgent(FileSearchAgentBase):
         deployment_name: str,
         api_key: str,
         base_url: str,
-        logger: Logger,
     ) -> None:
         # Load specialized system prompt for code search
         instructions = _load_prompt("code_search.txt", flow="default")
@@ -718,20 +719,17 @@ class CodeSearchAgent(FileSearchAgentBase):
             deployment_name=deployment_name,
             api_key=api_key,
             base_url=base_url,
-            logger=logger,
         )
 
 
 async def async_analyze_default(
-    current_directory: str,
     azure_openai_api_key: str,
     azure_openai_endpoint: str,
     general_deployment_name: str,
     software_deployment_name: str,
     code_path: str,
-    log_folder_path: str,
+    log_folder_path: List[str],
     error_message: str,
-    logger: Logger,
 ) -> str:
     """
     Default async analysis method using multi-agent orchestration.
@@ -752,22 +750,17 @@ async def async_analyze_default(
     logger.info("Initializing agents")
 
     # Set global logger for callbacks
-    global _logger
-    _logger = logger
-
     log_search_agent = LogSearchAgent(
-        log_paths=[log_folder_path],
+        log_paths=log_folder_path,
         deployment_name=software_deployment_name,
         api_key=azure_openai_api_key,
         base_url=azure_openai_endpoint,
-        logger=logger,
     )
     code_search_agent = CodeSearchAgent(
         code_paths=[code_path],
         deployment_name=software_deployment_name,
         api_key=azure_openai_api_key,
         base_url=azure_openai_endpoint,
-        logger=logger,
     )
 
     agents = [log_search_agent, code_search_agent]
@@ -843,13 +836,13 @@ async def async_analyze_default(
             except Exception as e:
                 if attempt == max_retries:
                     # Last attempt failed, re-raise the exception
-                    logger.error(
+                    logger.info(
                         f"Analysis failed after {max_retries + 1} attempts: {e}"
                     )
                     raise
 
                 # Calculate delay with exponential backoff
-                logger.warning(f"Analysis attempt {attempt + 1} failed: {e}")
+                logger.info(f"Analysis attempt {attempt + 1} failed: {e}")
 
         logger.info("🎯 **FINAL ANALYSIS RESULT**")
         logger.info(value)
@@ -860,5 +853,4 @@ async def async_analyze_default(
             await runtime.stop_when_idle()
             await runtime.close()
         except Exception as e:
-            logger.debug(f"Error during runtime cleanup: {e}")
             logger.debug(f"Error during runtime cleanup: {e}")
