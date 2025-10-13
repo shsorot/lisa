@@ -18,6 +18,7 @@ from lisa.tools import (
     Kill,
     Lscpu,
     Lspci,
+    Make,
     Meson,
     Modprobe,
     Ninja,
@@ -63,6 +64,7 @@ DPDK_PACKAGE_MANAGER_PACKAGES = DependencyInstaller(
             and bool(x.get_kernel_information().version >= "5.15.0")
             and x.is_package_in_repo("linux-modules-extra-azure"),
             packages=["linux-modules-extra-azure"],
+            requires_reboot=True,
         ),
         OsPackageDependencies(
             matcher=lambda x: isinstance(x, Debian),
@@ -105,8 +107,6 @@ DPDK_SOURCE_INSTALL_PACKAGES = DependencyInstaller(
                 "dpkg-dev",
                 "pkg-config",
                 "python3-pip",
-                "python3-pyelftools",
-                "python-pyelftools",
                 # 18.04 doesn't need linux-modules-extra-azure
                 # since it will never have MANA support
             ],
@@ -120,6 +120,7 @@ DPDK_SOURCE_INSTALL_PACKAGES = DependencyInstaller(
             and bool(x.get_kernel_information().version >= "5.15.0")
             and x.is_package_in_repo("linux-modules-extra-azure"),
             packages=["linux-modules-extra-azure"],
+            requires_reboot=True,
         ),
         OsPackageDependencies(
             matcher=lambda x: isinstance(x, Debian),
@@ -127,7 +128,6 @@ DPDK_SOURCE_INSTALL_PACKAGES = DependencyInstaller(
                 "build-essential",
                 "libnuma-dev",
                 "libmnl-dev",
-                "python3-pyelftools",
                 "libelf-dev",
                 "pkg-config",
             ],
@@ -198,6 +198,8 @@ class DpdkSourceInstall(Installer):
         "l3fwd",
         "multi_process/client_server_mp/mp_server",
         "multi_process/client_server_mp/mp_client",
+        "multi_process/symmetric_mp",
+        "devname",
     ]
 
     def _check_if_installed(self) -> bool:
@@ -226,7 +228,17 @@ class DpdkSourceInstall(Installer):
         # which breaks when another tool checks for it's existence before building...
         # like cmake, meson, make, autoconf, etc.
         self._node.tools[Ninja].install()
-        self._node.tools[Pip].install_packages("pyelftools")
+        # try multiple avenues for installing pyelftools, preferring the
+        # more recent convention of prepending apt/dnf/etc python system packages
+        # with python3-...
+        if self._os.is_package_in_repo("python3-pyelftools"):
+            self._os.install_packages("python3-pyelftools")
+        # then try the older package manager name if it's available
+        elif self._os.is_package_in_repo("pyelftools"):
+            self._os.install_packages("pyelftools")
+        else:
+            # otherwise try pip. This can fail to install for the system on ubuntu 24.04
+            self._node.tools[Pip].install_packages("pyelftools")
 
     def _uninstall(self) -> None:
         # undo source installation (thanks ninja)
@@ -255,8 +267,21 @@ class DpdkSourceInstall(Installer):
             "libdpdk", update_cached=True
         )
 
+    __devname_files = ["main.c", "Makefile", "meson.build"]
+
     def _install(self) -> None:
         super()._install()
+        # copy devname application into the examples directory
+        devname_local_folder = PurePath(__file__).parent.joinpath("devname")
+        self._node.shell.mkdir(
+            self.asset_path.joinpath("examples/devname"), parents=False, exist_ok=False
+        )
+        for file in self.__devname_files:
+            self._node.shell.copy(
+                devname_local_folder.joinpath(file),
+                self.asset_path.joinpath(f"examples/devname/{file}"),
+            )
+        # stringify the example app list
         if self._sample_applications:
             sample_apps = f"-Dexamples={','.join(self._sample_applications)}"
         else:
@@ -488,6 +513,8 @@ class DpdkTestpmd(Tool):
         extra_args: str = "",
         multiple_queues: bool = False,
         service_cores: int = 1,
+        mtu: int = 0,
+        mbuf_size: int = 0,
     ) -> str:
         #   testpmd \
         #   -l <core-list> \
@@ -503,7 +530,7 @@ class DpdkTestpmd(Tool):
         # pick amount of queues for tx/rx (txq/rxq flag)
         # our tests use equal amounts for rx and tx
         if multiple_queues:
-            if self.is_mana:
+            if self.is_mana and mode == "txonly":
                 queues = 8
             else:
                 queues = 4
@@ -511,7 +538,7 @@ class DpdkTestpmd(Tool):
             queues = 1
 
         # MANA needs a file descriptor argument, mlnx doesn't.
-        txd = 128
+        txd = 256
 
         # generate the flags for which devices to include in the tests
         nic_include_info = self.generate_testpmd_include(nic_to_include, vdev_id)
@@ -551,6 +578,15 @@ class DpdkTestpmd(Tool):
         if queues > 1:
             extra_args += f" --txq={queues} --rxq={queues}"
 
+        if mtu:
+            extra_args += (
+                f" --max-pkt-len={mtu} --txpkts={mtu} --tx-offloads=0x00008000"
+                f" --mbuf-size={mbuf_size}"
+            )
+
+        if mode == "txonly":
+            extra_args += " --txonly-multi-flow"
+
         assert_that(forwarding_cores).described_as(
             ("DPDK tests need at least one forwading core. ")
         ).is_greater_than(0)
@@ -565,7 +601,6 @@ class DpdkTestpmd(Tool):
             f"{self._testpmd_install_path} {core_list} "
             f"{nic_include_info} -- --forward-mode={mode} "
             f"-a --stats-period 2 --nb-cores={forwarding_cores} {extra_args} "
-            "--mbuf-size=2048,8096"
         )
 
     def run_for_n_seconds(self, cmd: str, timeout: int) -> str:
@@ -688,15 +723,20 @@ class DpdkTestpmd(Tool):
         return self._get_pps_sriov_rescind(self._rx_pps_key)
 
     def get_example_app_path(self, app_name: str) -> PurePath:
-        if isinstance(self.installer, DpdkSourceInstall):
-            return self.installer.dpdk_build_path.joinpath("examples").joinpath(
-                app_name
-            )
-        else:
-            raise AssertionError(
-                "get_example_app_path called for DPDK package manager installation! "
-                f"Trying to find {app_name} when DPDK was not built from source."
-            )
+        source_path = self.node.get_pure_path(
+            f"/usr/local/share/dpdk/examples/{app_name}"
+        )
+        shell = self.node.shell
+        assert_that(shell.exists(source_path)).described_as(
+            "dpdk examples path does not exist, "
+            f"cannot use requested dpdk example: {app_name}"
+        ).is_true()
+        # if the application has not been built;
+        # check if there is a build directory and build the application
+        # (if necessary)
+        if not shell.exists(source_path.joinpath("build")):
+            self.node.tools[Make].make("static", cwd=source_path, sudo=True)
+        return source_path.joinpath(f"build/{source_path.name}")
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)

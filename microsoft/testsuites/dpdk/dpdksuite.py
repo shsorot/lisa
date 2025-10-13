@@ -40,10 +40,11 @@ from microsoft.testsuites.dpdk.dpdkutil import (
     UnsupportedPackageVersionException,
     check_send_receive_compatibility,
     do_parallel_cleanup,
-    enable_uio_hv_generic_for_nic,
+    enable_uio_hv_generic,
     generate_send_receive_run_info,
     init_nodes_concurrent,
     initialize_node_resources,
+    run_dpdk_symmetric_mp,
     run_testpmd_concurrent,
     verify_dpdk_build,
     verify_dpdk_l3fwd_ntttcp_tcp,
@@ -102,6 +103,32 @@ class Dpdk(TestSuite):
         verify_dpdk_build(
             node, log, variables, "netvsc", HugePageSize.HUGE_2MB, result=result
         )
+
+    @TestCaseMetadata(
+        description="""
+            netvsc pmd version.
+            This test case checks DPDK can be built and installed correctly.
+            Prerequisites, accelerated networking must be enabled.
+            The VM should have at least two network interfaces,
+             with one interface for management.
+            More details refer https://docs.microsoft.com/en-us/azure/virtual-network/setup-dpdk#prerequisites # noqa: E501
+        """,
+        priority=2,
+        requirement=simple_requirement(
+            min_core_count=8,
+            min_nic_count=3,
+            network_interface=Sriov(),
+            unsupported_features=[Gpu, Infiniband],
+        ),
+    )
+    def verify_dpdk_symmetric_mp(
+        self,
+        node: Node,
+        log: Logger,
+        variables: Dict[str, Any],
+        result: TestResult,
+    ) -> None:
+        run_dpdk_symmetric_mp(node, log, variables)
 
     @TestCaseMetadata(
         description="""
@@ -657,6 +684,37 @@ class Dpdk(TestSuite):
 
     @TestCaseMetadata(
         description="""
+            Tests a basic sender/receiver setup for dpdk netvsc pmd with jumbo frames.
+            Default is set to request an mtu of 9k, test will skip if it's not possible.
+            Sender sends the packets, receiver receives them.
+            We check both to make sure the received traffic is within the expected
+            order-of-magnitude.
+        """,
+        priority=2,
+        requirement=simple_requirement(
+            min_core_count=8,
+            min_nic_count=2,
+            network_interface=Sriov(),
+            unsupported_features=[Gpu, Infiniband],
+            min_count=2,
+        ),
+    )
+    def verify_dpdk_send_receive_multi_txrx_queue_max_mtu_netvsc(
+        self,
+        environment: Environment,
+        log: Logger,
+        variables: Dict[str, Any],
+        result: TestResult,
+    ) -> None:
+        try:
+            verify_dpdk_send_receive_multi_txrx_queue(
+                environment, log, variables, "netvsc", result=result, set_mtu=9000
+            )
+        except UnsupportedPackageVersionException as err:
+            raise SkippedException(err)
+
+    @TestCaseMetadata(
+        description="""
             Tests a basic sender/receiver setup for default failsafe driver setup.
             Sender sends the packets, receiver receives them.
             We check both to make sure the received traffic is within the expected
@@ -863,6 +921,47 @@ class Dpdk(TestSuite):
         )
 
     @TestCaseMetadata(
+        description=(
+            """
+                Run the L3 forwarding test for DPDK.
+                This test creates a DPDK port forwarding setup between
+                two NICs on the same VM. It forwards packets from a sender on
+                subnet_a to a receiver on subnet_b. Without l3fwd,
+                packets will not be able to jump the subnets.  This imitates
+                a network virtual appliance setup, firewall, or other data plane
+                tool for managing network traffic with DPDK.
+        """
+        ),
+        priority=3,
+        requirement=simple_requirement(
+            supported_os=[Ubuntu],
+            min_core_count=8,
+            min_count=3,
+            min_nic_count=3,
+            network_interface=Sriov(),
+            unsupported_features=[Gpu, Infiniband],
+        ),
+    )
+    def verify_dpdk_l3fwd_ntttcp_tcp_hotplug(
+        self,
+        environment: Environment,
+        log: Logger,
+        variables: Dict[str, Any],
+        result: TestResult,
+    ) -> None:
+        force_dpdk_default_source(variables)
+        pmd = "netvsc"
+        verify_dpdk_l3fwd_ntttcp_tcp(
+            environment,
+            log,
+            variables,
+            HugePageSize.HUGE_2MB,
+            pmd=pmd,
+            result=result,
+            rescind_sriov=True,
+        )
+
+    @TestCaseMetadata(
         description="""
                 Run the l3fwd test using GiB hugepages.
                 This test creates a DPDK port forwarding setup between
@@ -925,7 +1024,7 @@ class Dpdk(TestSuite):
         nic = node.nics.get_secondary_nic()
         node.nics.get_nic_driver(nic.name)
         if nic.module_name == "hv_netvsc":
-            enable_uio_hv_generic_for_nic(node, nic)
+            enable_uio_hv_generic(node)
 
         original_driver = nic.driver_sysfs_path
         node.nics.unbind(nic)
