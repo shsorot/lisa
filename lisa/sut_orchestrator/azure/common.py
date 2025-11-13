@@ -1773,6 +1773,7 @@ def check_or_create_storage_account(
     log: Logger,
     sku: str = "Standard_LRS",
     kind: str = "StorageV2",
+    minimum_tls_version: str = "TLS1_2",
     enable_https_traffic_only: bool = True,
     allow_shared_key_access: bool = False,
     allow_blob_public_access: bool = False,
@@ -1799,6 +1800,7 @@ def check_or_create_storage_account(
                 enable_https_traffic_only=enable_https_traffic_only,
                 allow_shared_key_access=allow_shared_key_access,
                 allow_blob_public_access=allow_blob_public_access,
+                minimum_tls_version=minimum_tls_version,
             )
             operation = storage_client.storage_accounts.begin_create(
                 resource_group_name=resource_group_name,
@@ -2337,6 +2339,7 @@ def get_vhd_details(platform: "AzurePlatform", vhd_path: str) -> Any:
     }
 
 
+@lru_cache(maxsize=256)  # noqa: B019
 def find_storage_account(
     platform: "AzurePlatform", sc_name: str, subscription_id: str
 ) -> Any:
@@ -2346,7 +2349,13 @@ def find_storage_account(
     # sometimes it will fail for below reason if list storage accounts like this way
     # [x for x in storage_client.storage_accounts.list() if x.name == sc_name]
     # failure - Message: Resource provider 'Microsoft.Storage' failed to return collection response for type 'storageAccounts'.  # noqa: E501
-    sc_list = storage_client.storage_accounts.list()
+
+    # storage_client.storage_accounts.list() returns a paged iterator, which triggers
+    # additional API calls during iteration. Frequent or concurrent iterations can
+    # exceed Azure's request limits, resulting in throttling errors. To mitigate this,
+    # we cache the full list of storage accounts using list(), prevent
+    # 'ResourceCollectionRequestsThrottled' errors.
+    sc_list = list(storage_client.storage_accounts.list())
     found_sc = None
     for sc in sc_list:
         if sc.name.lower() == sc_name.lower():

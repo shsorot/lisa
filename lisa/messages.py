@@ -131,6 +131,7 @@ class MetricRelativity(str, Enum):
     NA = ""
     HigherIsBetter = "HigherIsBetter"
     LowerIsBetter = "LowerIsBetter"
+    Parameter = "Parameter"
 
     @classmethod
     def parse(cls, str_value: str) -> "MetricRelativity":
@@ -138,6 +139,8 @@ class MetricRelativity(str, Enum):
             return MetricRelativity.HigherIsBetter
         elif str_value.upper() == cls.LowerIsBetter.upper():
             return MetricRelativity.LowerIsBetter
+        elif str_value.upper() == cls.Parameter.upper():
+            return MetricRelativity.Parameter
         else:
             return MetricRelativity.NA
 
@@ -147,6 +150,7 @@ class UnifiedPerfMessage(PerfMessage):
     type: str = "UnifiedPerformance"
     metric_name: str = ""
     metric_value: float = 0.0
+    metric_str_value: str = ""
     metric_unit: str = ""
     metric_description: str = ""
     metric_relativity: Optional[MetricRelativity] = MetricRelativity.NA
@@ -406,6 +410,7 @@ def send_unified_perf_message(
     metric_name: str = "",
     metric_value: float = 0.0,
     metric_unit: str = "",
+    metric_str_value: str = "",
     metric_description: str = "",
     metric_relativity: Optional[MetricRelativity] = MetricRelativity.NA,
     tool: str = "",
@@ -428,6 +433,7 @@ def send_unified_perf_message(
     message.metric_unit = metric_unit
     message.metric_description = metric_description
     message.metric_relativity = metric_relativity
+    message.metric_str_value = metric_str_value
 
     message.tool = tool
 
