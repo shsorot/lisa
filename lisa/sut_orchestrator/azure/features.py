@@ -577,7 +577,9 @@ class Gpu(AzureFeatureMixin, features.Gpu):
     )
 
     def is_supported(self) -> bool:
-        # TODO: more supportability can be defined here
+        # TODO: The GPU Feature is supposed to handle cloud related
+        # requirements. The OS related dependencies should be
+        # moved to gpu_drivers and smi tools.
         node = self._node
         supported = False
         if isinstance(node.os, Redhat):
@@ -660,7 +662,6 @@ class Gpu(AzureFeatureMixin, features.Gpu):
             result = extension.create_or_update(
                 type_="NvidiaGpuDriverLinux",
                 publisher="Microsoft.HpcCompute",
-                type_handler_version="1.6",
                 auto_upgrade_minor_version=True,
                 settings={},
             )

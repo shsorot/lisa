@@ -682,18 +682,28 @@ class CloudHypervisorTests(Tool):
             assert_msg = assertions[0].strip()[:100]
             diagnostic_messages.append(f"Assertion: {assert_msg}")
 
-        # Add "likely hung in" diagnostic for timeouts based on last successful test
-        oks = re.findall(r"test\s+(\S+)\s+\.\.\.\s+ok", stdout)
-        if oks and hasattr(self, "_ordered_subtests"):
-            try:
-                last_ok = oks[-1]
-                i = self._ordered_subtests.index(last_ok)
-                if i + 1 < len(self._ordered_subtests):
-                    diagnostic_messages.append(
-                        f"Likely hung in: {self._ordered_subtests[i + 1]}"
-                    )
-            except (ValueError, IndexError):
-                pass
+        # Check for hung tests using "has been running" messages
+        # Note: Cargo test doesn't print "test foo ..." until the test completes,
+        # so we can't detect hung tests by comparing started vs finished.
+        # We rely on the "has been running for over X seconds" messages.
+        running_pattern = r"test\s+(\S+)\s+has been running for over \d+ seconds"
+        running_tests = re.findall(running_pattern, stdout)
+
+        if running_tests:
+            # Get list of tests that actually finished
+            finished_pattern = r"test\s+(\S+)\s+\.\.\.\s+(ok|FAILED|ignored)"
+            finished_matches = re.findall(finished_pattern, stdout)
+            finished_tests = [match[0] for match in finished_matches]
+
+            # Cross-check: only report tests marked as "running too long"
+            # that didn't actually finish (these are truly hung)
+            hung_tests = [t for t in running_tests if t not in finished_tests]
+
+            if hung_tests:
+                # Remove duplicates while preserving order
+                unique_hung_tests = list(dict.fromkeys(hung_tests))
+                tests_list = ", ".join(unique_hung_tests)
+                diagnostic_messages.append(f"Likely hung in: {tests_list}")
 
         return diagnostic_messages
 
@@ -838,6 +848,7 @@ echo "[env] RB=$RUST_BACKTRACE RLB=$RUST_LIB_BACKTRACE RLOG=$RUST_LOG"
 echo "[env] CH_IDLE_SECS=${{CH_IDLE_SECS:-600}}"
 echo "[env] CH_HANG_KILL_SECS=${{CH_HANG_KILL_SECS:-1800}}"
 echo "[env] CH_CHECK_INTERVAL=${{CH_CHECK_INTERVAL:-30}}"
+echo "[env] MIGRATABLE_VERSION=${{MIGRATABLE_VERSION:-not_set}}"
 test -x scripts/dev_cli.sh || {{ echo "[error] scripts/dev_cli.sh missing"; exit 98; }}
 
 # repo-local artifact names so LISA will collect them
@@ -1056,6 +1067,10 @@ exit $ec
         tool_path = self.get_tool_path(use_global=True)
         self.repo_root = tool_path / "cloud-hypervisor"
         self.cmd_path = self.repo_root / "scripts" / "dev_cli.sh"
+
+        # Pass through MIGRATABLE_VERSION from pipeline environment if set
+        if "MIGRATABLE_VERSION" in os.environ:
+            self.env_vars["MIGRATABLE_VERSION"] = os.environ["MIGRATABLE_VERSION"]
 
     def _install(self) -> bool:
         git = self.node.tools[Git]
