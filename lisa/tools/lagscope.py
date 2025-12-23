@@ -402,6 +402,46 @@ class Lagscope(Tool, KillableMixin):
         git = self.node.tools[Git]
         git.clone(self.repo, tool_path, ref=self.branch)
         code_path = tool_path.joinpath("lagscope")
+
+        src_path = code_path.joinpath("src")
+
+        # Get the installed CMake version dynamically
+        cmake_version_result = self.node.execute(
+            "cmake --version | head -n1 | awk '{print $3}' | cut -d. -f1,2",
+            shell=True,
+        )
+
+        cmake_version = "3.5"  # Safe default fallback
+        if cmake_version_result.exit_code == 0 and cmake_version_result.stdout:
+            # Clean the output: remove all whitespace and control characters
+            raw_version = cmake_version_result.stdout
+            # Extract only the first valid version pattern (digits.digits)
+            version_match = re.search(r"^(\d+\.\d+)", raw_version.strip())
+            if version_match:
+                cmake_version = version_match.group(1)
+                self._log.debug(f"Detected CMake version: {cmake_version}")
+            else:
+                self._log.debug(
+                    f"Could not parse CMake version from '{raw_version}', "
+                    f"using fallback: {cmake_version}"
+                )
+        else:
+            self._log.debug(
+                f"Could not detect CMake version, using fallback: {cmake_version}"
+            )
+
+        # Update CMakeLists.txt with the detected version
+        self.node.execute(
+            f"sed -i 's/cmake_minimum_required(VERSION [0-9.]\\+)/"
+            f"cmake_minimum_required(VERSION {cmake_version})/' "
+            f"{src_path}/CMakeLists.txt",
+            cwd=code_path,
+            sudo=True,
+            shell=True,
+            expected_exit_code=0,
+            expected_exit_code_failure_message="fail to update src/CMakeLists.txt",
+        )
+
         self.node.execute(
             "./do-cmake.sh build",
             cwd=code_path,

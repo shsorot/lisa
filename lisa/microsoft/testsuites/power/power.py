@@ -7,6 +7,7 @@ from typing import Any, cast
 from assertpy import assert_that
 from func_timeout import func_timeout
 from microsoft.testsuites.power.common import (
+    _prepare_hibernation_environment,
     check_hibernation_disk_requirements,
     cleanup_env,
     is_distro_supported,
@@ -22,11 +23,13 @@ from lisa import (
     TestCaseMetadata,
     TestSuite,
     TestSuiteMetadata,
+    schema,
 )
 from lisa.features import Disk, HibernationEnabled, Sriov, Synthetic
 from lisa.features.availability import AvailabilityTypeNoRedundancy
 from lisa.node import Node
 from lisa.operating_system import BSD, Windows
+from lisa.search_space import IntRange
 from lisa.sut_orchestrator.azure.features import AzureExtension
 from lisa.testsuite import simple_requirement
 from lisa.tools import Date, Hwclock, StressNg
@@ -47,6 +50,9 @@ class Power(TestSuite):
         if isinstance(node.os, BSD) or isinstance(node.os, Windows):
             raise SkippedException(f"{node.os} is not supported.")
 
+        # Expand OS partition first (needed for RHEL/LVM before checking disk space)
+        _prepare_hibernation_environment(node)
+
         check_hibernation_disk_requirements(node)
 
     @TestCaseMetadata(
@@ -66,6 +72,7 @@ class Power(TestSuite):
         """,
         priority=3,
         requirement=simple_requirement(
+            min_os_disk_size=500,
             network_interface=Synthetic(),
             supported_features=[HibernationEnabled(), AvailabilityTypeNoRedundancy()],
         ),
@@ -81,6 +88,7 @@ class Power(TestSuite):
         """,
         priority=3,
         requirement=simple_requirement(
+            min_os_disk_size=500,
             network_interface=Sriov(),
             supported_features=[HibernationEnabled(), AvailabilityTypeNoRedundancy()],
         ),
@@ -100,6 +108,7 @@ class Power(TestSuite):
         """,
         priority=3,
         requirement=simple_requirement(
+            min_os_disk_size=500,
             supported_features=[HibernationEnabled(), AvailabilityTypeNoRedundancy()],
         ),
     )
@@ -142,6 +151,7 @@ class Power(TestSuite):
         priority=3,
         requirement=simple_requirement(
             min_count=2,
+            min_os_disk_size=500,
             supported_features=[HibernationEnabled(), AvailabilityTypeNoRedundancy()],
         ),
     )
@@ -165,6 +175,7 @@ class Power(TestSuite):
         """,
         priority=3,
         requirement=simple_requirement(
+            min_os_disk_size=500,
             supported_features=[HibernationEnabled(), AvailabilityTypeNoRedundancy()],
         ),
     )
@@ -185,6 +196,7 @@ class Power(TestSuite):
         """,
         priority=3,
         requirement=simple_requirement(
+            min_os_disk_size=500,
             supported_features=[HibernationEnabled(), AvailabilityTypeNoRedundancy()],
         ),
     )
@@ -211,8 +223,11 @@ class Power(TestSuite):
         """,
         priority=3,
         requirement=simple_requirement(
-            min_nic_count=8,
-            network_interface=Synthetic(),
+            min_os_disk_size=500,
+            network_interface=schema.NetworkInterfaceOptionSettings(
+                data_path=schema.NetworkDataPath.Synthetic,
+                nic_count=IntRange(min=2, choose_max_value=True),
+            ),
             supported_features=[HibernationEnabled(), AvailabilityTypeNoRedundancy()],
         ),
     )
@@ -229,8 +244,11 @@ class Power(TestSuite):
         """,
         priority=3,
         requirement=simple_requirement(
-            min_nic_count=8,
-            network_interface=Sriov(),
+            min_os_disk_size=500,
+            network_interface=schema.NetworkInterfaceOptionSettings(
+                data_path=schema.NetworkDataPath.Sriov,
+                nic_count=IntRange(min=2, choose_max_value=True),
+            ),
             supported_features=[HibernationEnabled(), AvailabilityTypeNoRedundancy()],
         ),
     )
@@ -247,9 +265,11 @@ class Power(TestSuite):
         """,
         priority=3,
         requirement=simple_requirement(
-            min_nic_count=8,
+            min_os_disk_size=500,
             supported_features=[HibernationEnabled(), AvailabilityTypeNoRedundancy()],
-            min_data_disk_count=32,
+            disk=schema.DiskOptionSettings(
+                data_disk_count=IntRange(min=8, choose_max_value=True)
+            ),
         ),
     )
     def verify_hibernation_max_data_disks(self, node: Node, log: Logger) -> None:
@@ -280,6 +300,7 @@ class Power(TestSuite):
         """,
         priority=2,
         requirement=simple_requirement(
+            min_os_disk_size=500,
             supported_features=[
                 HibernationEnabled(),
                 AvailabilityTypeNoRedundancy(),
