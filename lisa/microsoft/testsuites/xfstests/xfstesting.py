@@ -82,6 +82,7 @@ from lisa import (
     TestCaseMetadata,
     TestSuite,
     TestSuiteMetadata,
+    UnsupportedCpuArchitectureException,
     UnsupportedDistroException,
     schema,
     search_space,
@@ -89,7 +90,14 @@ from lisa import (
 )
 from lisa.environment import Environment
 from lisa.features import Disk, Nvme
-from lisa.operating_system import BSD, CBLMariner, Oracle, Redhat, Windows
+from lisa.operating_system import (
+    BSD,
+    CBLMariner,
+    CpuArchitecture,
+    Oracle,
+    Redhat,
+    Windows,
+)
 from lisa.sut_orchestrator import AZURE, HYPERV
 from lisa.sut_orchestrator.azure.features import AzureFileShare, FileShareProtocol
 from lisa.sut_orchestrator.azure.platform_ import AzurePlatform
@@ -98,6 +106,7 @@ from lisa.tools import (
     Echo,
     FileSystem,
     KernelConfig,
+    Lscpu,
     Mkfs,
     Mount,
     NFSClient,
@@ -1285,6 +1294,12 @@ class Xfstesting(TestSuite):
         assert environment, "fail to get environment from testresult"
         assert isinstance(environment.platform, AzurePlatform)
         node = cast(RemoteNode, environment.nodes[0])
+        # Azure File Share SMB is not supported on ARM64
+        node_arch = node.tools[Lscpu].get_architecture()
+        if node_arch == CpuArchitecture.ARM64:
+            raise SkippedException(
+                UnsupportedCpuArchitectureException(arch=str(node_arch.value))
+            )
         if not node.tools[KernelConfig].is_enabled("CONFIG_CIFS"):
             raise UnsupportedDistroException(
                 node.os, "current distro is not enabled with cifs module."
@@ -1409,6 +1424,13 @@ class Xfstesting(TestSuite):
         assert environment, "fail to get environment from testresult"
         assert isinstance(environment.platform, AzurePlatform)
         node = cast(RemoteNode, environment.nodes[0])
+
+        # Azure File Share NFS is not supported on ARM64
+        node_arch = node.tools[Lscpu].get_architecture()
+        if node_arch == CpuArchitecture.ARM64:
+            raise SkippedException(
+                UnsupportedCpuArchitectureException(arch=str(node_arch.value))
+            )
 
         # Install xfstests
         xfstests = self._install_xfstests(node)
